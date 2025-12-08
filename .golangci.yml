@@ -1,0 +1,243 @@
+version: "2"
+run:
+  tests: true
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - dogsled
+    - dupl
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - mnd
+    - nakedret
+    - noctx
+    - nolintlint
+    - revive
+    - rowserrcheck
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+  settings:
+    dupl:
+      threshold: 100
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    funlen:
+      lines: 100
+      statements: 50
+    gocognit:
+      min-complexity: 20
+    goconst:
+      min-len: 2
+      min-occurrences: 2
+    gocritic:
+      disabled-checks:
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - whyNoLint
+        - wrapperFunc
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 15
+    gosec:
+      severity: medium
+      confidence: medium
+    govet:
+      enable-all: true
+    lll:
+      line-length: 140
+    misspell:
+      locale: US
+    mnd:
+      ignored-numbers:
+        - "0644"
+        - "0755"
+        - "0666"
+        - "5"
+        - "10"
+        - "100"
+        - "1024"
+        - "50"
+        - "2"
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: unexported-return
+          severity: warning
+        - name: error-return
+          severity: warning
+        - name: error-naming
+          severity: warning
+        - name: var-naming
+          severity: warning
+        - name: range
+          severity: warning
+        - name: increment-decrement
+          severity: warning
+        - name: var-declaration
+          severity: warning
+        - name: package-comments
+          severity: warning
+        - name: range-val-in-closure
+          severity: warning
+        - name: range-val-address
+          severity: warning
+        - name: unhandled-error
+          severity: warning
+        - name: errorf
+          severity: warning
+    staticcheck:
+      checks:
+        - all
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - dupl
+          - errcheck
+          - funlen
+          - gocognit
+          - gocyclo
+          - gosec
+        path: _test\.go
+      - linters:
+          - errcheck
+          - gosec
+        path: cmd/
+      - linters:
+          - errcheck
+        path: internal/process/process.go
+        text: Error return value of `.*\.(Signal|Kill)` is not checked
+      - linters:
+          - errcheck
+        path: internal/supervisord/
+        text: Error return value of `.*\.(Stop|Signal|FindProcess|StartProcess)` is not checked
+      - linters:
+          - revive
+        path: internal/supervisord/
+        text: Unhandled error in call to function
+      - linters:
+          - errorlint
+        path: internal/process/process.go
+        text: type assertion on error will fail on wrapped errors
+      - linters:
+          - gosec
+        path: internal/process/process.go
+        text: Subprocess launched with a potential tainted input
+      - linters:
+          - gocyclo
+        path: internal/process/process.go
+        text: cyclomatic complexity.*is high
+      - linters:
+          - gocyclo
+        path: internal/dependency/graph.go
+        text: cyclomatic complexity.*is high
+      - linters:
+          - dupl
+        path: internal/process/process.go
+        text: lines are duplicate
+      - linters:
+          - gocritic
+        path: cmd/
+        text: exitAfterDefer
+      - linters:
+          - govet
+        path: .*_test\.go
+        text: 'shadow: declaration.*shadows'
+      - path: (.+)\.go$
+        text: Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*printf?|os\.(Un)?Setenv). is not checked
+      - path: (.+)\.go$
+        text: 'G104: Errors unhandled'
+      - path: (.+)\.go$
+        text: 'G107: Potential HTTP request made with variable url'
+      - path: (.+)\.go$
+        text: 'G402: TLS InsecureSkipVerify set true'
+      - path: (.+)\.go$
+        text: 'G404: Use of weak random number generator'
+      - path: (.+)\.go$
+        text: 'G501: Blacklisted import crypto/md5: weak cryptographic primitive'
+      - path: (.+)\.go$
+        text: 'G505: Blacklisted import crypto/sha1: weak cryptographic primitive'
+      - path: (.+)\.go$
+        text: 'G601: Implicit memory aliasing in for loop'
+      - path: (.+)\.go$
+        text: 'G306: Expect WriteFile permissions'
+      - path: (.+)\.go$
+        text: 'Magic number: .* in <argument> detected'
+      - path: (.+)\.go$
+        text: 'Magic number: .* in <operation> detected'
+      - path: (.+)\.go$
+        text: 'Magic number: .* in <condition> detected'
+      - path: (.+)\.go$
+        text: 'SA9003: empty branch'
+      - path: (.+)\.go$
+        text: 'fieldalignment:'
+      - path: (.+)\.go$
+        text: 'unnamedResult:'
+      - path: (.+)\.go$
+        text: 'emptyStringTest:'
+      - path: (.+)\.go$
+        text: 'paramTypeCombine:'
+    paths:
+      - .*\.pb\.go$
+      - .*\.gen\.go$
+      - bin
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 10
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/ademidoff/go-supervisord
+  exclusions:
+    generated: lax
+    paths:
+      - .*\.pb\.go$
+      - .*\.gen\.go$
+      - bin
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$

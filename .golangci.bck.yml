@@ -1,0 +1,211 @@
+run:
+  timeout: 5m
+  tests: true
+
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  govet:
+    enable-all: true
+  gocyclo:
+    min-complexity: 15
+  dupl:
+    threshold: 100
+  goconst:
+    min-len: 2
+    min-occurrences: 2
+  misspell:
+    locale: US
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: unexported-return
+        severity: warning
+      - name: error-return
+        severity: warning
+      - name: error-naming
+        severity: warning
+      - name: var-naming
+        severity: warning
+      - name: range
+        severity: warning
+      - name: increment-decrement
+        severity: warning
+      - name: var-declaration
+        severity: warning
+      - name: package-comments
+        severity: warning
+      - name: range-val-in-closure
+        severity: warning
+      - name: range-val-address
+        severity: warning
+      - name: unhandled-error
+        severity: warning
+      - name: errorf
+        severity: warning
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - wrapperFunc
+  funlen:
+    lines: 100
+    statements: 50
+  gocognit:
+    min-complexity: 20
+  mnd:
+    checks: []
+    ignored-numbers:
+      - '0644'
+      - '0755'
+      - '0666'
+      - '5'
+      - '10'
+      - '100'
+      - '1024'
+      - '50'
+      - '2'
+  lll:
+    line-length: 140
+  goimports:
+    local-prefixes: github.com/ademidoff/go-supervisord
+  gosec:
+    severity: medium
+    confidence: medium
+  staticcheck:
+    checks: ["all"]
+
+linters:
+  disable-all: true
+  enable:
+    - bodyclose
+    # - depguard
+    - dogsled
+    - dupl
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - mnd
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - noctx
+    - nolintlint
+    - revive
+    - rowserrcheck
+    - staticcheck
+    - stylecheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+
+issues:
+  exclude-dirs:
+    - bin
+    - vendor
+  exclude-files:
+    - ".*\\.pb\\.go$"
+    - ".*\\.gen\\.go$"
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+        - funlen
+        - gocognit
+        - gocyclo
+        - dupl
+    - path: cmd/
+      linters:
+        - errcheck
+        - gosec
+    - path: internal/process/process.go
+      text: 'Error return value of `.*\.(Signal|Kill)` is not checked'
+      linters:
+        - errcheck
+    - path: internal/supervisord/
+      text: 'Error return value of `.*\.(Stop|Signal|FindProcess|StartProcess)` is not checked'
+      linters:
+        - errcheck
+    - path: internal/supervisord/
+      text: 'Unhandled error in call to function'
+      linters:
+        - revive
+    - path: internal/process/process.go
+      text: 'type assertion on error will fail on wrapped errors'
+      linters:
+        - errorlint
+    - path: internal/process/process.go
+      text: 'Subprocess launched with a potential tainted input'
+      linters:
+        - gosec
+    - path: internal/process/process.go
+      text: 'cyclomatic complexity.*is high'
+      linters:
+        - gocyclo
+    - path: internal/dependency/graph.go
+      text: 'cyclomatic complexity.*is high'
+      linters:
+        - gocyclo
+    - path: internal/process/process.go
+      text: 'lines are duplicate'
+      linters:
+        - dupl
+    - path: cmd/
+      text: 'exitAfterDefer'
+      linters:
+        - gocritic
+    - path: .*_test\.go
+      text: 'shadow: declaration.*shadows'
+      linters:
+        - govet
+  max-issues-per-linter: 50
+  max-same-issues: 10
+  exclude:
+    - 'Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*printf?|os\.(Un)?Setenv). is not checked'
+    - 'G104: Errors unhandled'
+    - 'G107: Potential HTTP request made with variable url'
+    - 'G402: TLS InsecureSkipVerify set true'
+    - 'G404: Use of weak random number generator'
+    - 'G501: Blacklisted import crypto/md5: weak cryptographic primitive'
+    - 'G505: Blacklisted import crypto/sha1: weak cryptographic primitive'
+    - 'G601: Implicit memory aliasing in for loop'
+    - 'G306: Expect WriteFile permissions'
+    - 'Magic number: .* in <argument> detected'
+    - 'Magic number: .* in <operation> detected'
+    - 'Magic number: .* in <condition> detected'
+    - 'SA9003: empty branch'
+    - 'fieldalignment:'
+    - 'unnamedResult:'
+    - 'emptyStringTest:'
+    - 'paramTypeCombine:'
