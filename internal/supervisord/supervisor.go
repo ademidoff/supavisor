@@ -24,7 +24,7 @@ type ProcessStatusInfo struct {
 }
 
 // supervisord manages all processes
-type supervisord struct {
+type Supervisord struct {
 	config          *config.Config
 	processes       map[string]*process.Process
 	processMutex    sync.RWMutex
@@ -35,7 +35,7 @@ type supervisord struct {
 }
 
 // NewSupervisor creates a new supervisord instance
-func NewSupervisor(cfg *config.Config) (*supervisord, error) {
+func NewSupervisor(cfg *config.Config) (*Supervisord, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -55,7 +55,7 @@ func NewSupervisor(cfg *config.Config) (*supervisord, error) {
 		return nil, fmt.Errorf("dependency graph validation failed: %w", err)
 	}
 
-	return &supervisord{
+	return &Supervisord{
 		config:          cfg,
 		processes:       make(map[string]*process.Process),
 		dependencyGraph: graph,
@@ -64,7 +64,7 @@ func NewSupervisor(cfg *config.Config) (*supervisord, error) {
 }
 
 // Start starts the supervisord
-func (s *supervisord) Start() error {
+func (s *Supervisord) Start() error {
 	if s.running {
 		return fmt.Errorf("supervisord is already running")
 	}
@@ -95,7 +95,7 @@ func (s *supervisord) Start() error {
 }
 
 // Stop stops the supervisord and all processes
-func (s *supervisord) Stop() error {
+func (s *Supervisord) Stop() error {
 	if !s.running {
 		return nil
 	}
@@ -125,7 +125,7 @@ func (s *supervisord) Stop() error {
 }
 
 // startAutostartProcesses starts all processes configured to autostart
-func (s *supervisord) startAutostartProcesses() {
+func (s *Supervisord) startAutostartProcesses() {
 	// Get topological sort order
 	order, err := s.dependencyGraph.TopologicalSort()
 	if err != nil {
@@ -155,7 +155,7 @@ func (s *supervisord) startAutostartProcesses() {
 }
 
 // StartProcess starts a specific process
-func (s *supervisord) StartProcess(name string) error {
+func (s *Supervisord) StartProcess(name string) error {
 	progConfig, exists := s.config.Programs[name]
 	if !exists {
 		return fmt.Errorf("process %s not found", name)
@@ -198,7 +198,7 @@ func (s *supervisord) StartProcess(name string) error {
 }
 
 // StopProcess stops a specific process
-func (s *supervisord) StopProcess(name string) error {
+func (s *Supervisord) StopProcess(name string) error {
 	s.processMutex.Lock()
 	defer s.processMutex.Unlock()
 
@@ -224,7 +224,7 @@ func (s *supervisord) StopProcess(name string) error {
 }
 
 // RestartProcess restarts a specific process
-func (s *supervisord) RestartProcess(name string) error {
+func (s *Supervisord) RestartProcess(name string) error {
 	if err := s.StopProcess(name); err != nil {
 		return err
 	}
@@ -233,14 +233,14 @@ func (s *supervisord) RestartProcess(name string) error {
 }
 
 // Reload reloads the configuration
-func (s *supervisord) Reload() error {
+func (s *Supervisord) Reload() error {
 	// For now, just validate the current config
 	// Full reload would require stopping and restarting processes
 	return s.config.Validate()
 }
 
 // GetStatus returns the status of all processes
-func (s *supervisord) GetStatus() []ProcessStatusInfo {
+func (s *Supervisord) GetStatus() []ProcessStatusInfo {
 	s.processMutex.RLock()
 	defer s.processMutex.RUnlock()
 
@@ -274,7 +274,7 @@ func (s *supervisord) GetStatus() []ProcessStatusInfo {
 }
 
 // onProcessStateChange is called when a process state changes
-func (s *supervisord) onProcessStateChange(name string, oldState, newState process.State) {
+func (s *Supervisord) onProcessStateChange(name string, oldState, newState process.State) {
 	// Handle dependency failures
 	if newState == process.StateExited || newState == process.StateFatal {
 		dependents := s.dependencyGraph.GetDependents(name)
@@ -291,12 +291,12 @@ func (s *supervisord) onProcessStateChange(name string, oldState, newState proce
 }
 
 // onDependencyStop is called when a dependency stops
-func (s *supervisord) onDependencyStop(name string) {
+func (s *Supervisord) onDependencyStop(name string) {
 	// This is handled in onProcessStateChange
 }
 
 // monitorProcesses monitors all processes
-func (s *supervisord) monitorProcesses() {
+func (s *Supervisord) monitorProcesses() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -311,7 +311,7 @@ func (s *supervisord) monitorProcesses() {
 }
 
 // setupSignalHandling sets up signal handling for graceful shutdown
-func (s *supervisord) setupSignalHandling() {
+func (s *Supervisord) setupSignalHandling() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -323,7 +323,7 @@ func (s *supervisord) setupSignalHandling() {
 }
 
 // writePIDFile writes the PID file
-func (s *supervisord) writePIDFile() error {
+func (s *Supervisord) writePIDFile() error {
 	if s.config.Supervisord.PidFile == "" {
 		return nil
 	}
@@ -333,7 +333,7 @@ func (s *supervisord) writePIDFile() error {
 }
 
 // removePIDFile removes the PID file
-func (s *supervisord) removePIDFile() {
+func (s *Supervisord) removePIDFile() {
 	if s.config.Supervisord.PidFile != "" {
 		os.Remove(s.config.Supervisord.PidFile)
 	}

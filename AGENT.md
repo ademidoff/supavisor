@@ -25,6 +25,7 @@ supervisord manages processes using the following pattern:
 - Prefer modern Go idioms (context, error wrapping)
 - Prefer modern slice helpers (e.g., `slices.Contains`), range loops
 - Use `any` instead of `interface{}`
+- Always use `make` to create arrays and maps
 
 ### Don't
 - Don't edit generated files manually

@@ -14,12 +14,12 @@ import (
 type IPCServer struct {
 	socketPath  string
 	listener    net.Listener
-	supervisord *supervisord
+	supervisord *Supervisord
 	stopChan    chan struct{}
 }
 
 // NewIPCServer creates a new IPC server
-func NewIPCServer(socketPath string, supervisord *supervisord) *IPCServer {
+func NewIPCServer(socketPath string, supervisord *Supervisord) *IPCServer {
 	return &IPCServer{
 		socketPath:  socketPath,
 		supervisord: supervisord,

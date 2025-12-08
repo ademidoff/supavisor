@@ -32,7 +32,7 @@ func (g *Graph) AddNode(name string, dependencies []string) {
 		for _, oldDep := range existingNode.Dependencies {
 			if depNode, exists := g.nodes[oldDep]; exists {
 				// Remove name from oldDep's dependents
-				newDependents := []string{}
+				newDependents := make([]string, 0, len(depNode.Dependents))
 				for _, d := range depNode.Dependents {
 					if d != name {
 						newDependents = append(newDependents, d)
@@ -46,7 +46,7 @@ func (g *Graph) AddNode(name string, dependencies []string) {
 		node := &Node{
 			Name:         name,
 			Dependencies: dependencies,
-			Dependents:   []string{},
+			Dependents:   make([]string, 0),
 		}
 		g.nodes[name] = node
 	}
@@ -98,7 +98,7 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	}
 
 	// Find all nodes with in-degree 0
-	queue := []string{}
+	queue := make([]string, 0, len(g.nodes))
 	for name, degree := range inDegree {
 		if degree == 0 {
 			queue = append(queue, name)

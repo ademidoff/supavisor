@@ -3,8 +3,8 @@
 # Version of golangci-lint to use
 GOLANGCI_LINT_VERSION := v2.7.2
 
-# Path to golangci-lint binary - check ./bin first, then PATH
-GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint; else which golangci-lint 2>/dev/null || echo ""; fi)
+# Path to golangci-lint binary
+GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
 
 # Build both supervisord and supervisorctl binaries
 build:
@@ -36,7 +36,7 @@ lint: lint-install
 		echo "Error: could not find golangci-lint in ./bin/"; \
 		exit 1; \
 	fi; \
-	$${GOLANGCI_LINT} run --timeout=5m ./...
+	$(GOLANGCI_LINT) run --timeout=5m ./...
 	@echo "Linting complete!"
 
 # Clean build artifacts
@@ -45,4 +45,3 @@ clean:
 	@rm -rf bin/
 	@go clean
 	@echo "Clean complete!"
-
