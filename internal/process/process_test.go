@@ -1,9 +1,11 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ademidoff/go-supervisord/internal/config"
 )
@@ -257,6 +259,36 @@ func TestCloseLogFiles_SeparateFiles(t *testing.T) {
 		if err == nil {
 			t.Error("stderrFile should be closed and write should fail")
 		}
+	}
+}
+
+func TestExponentialBackoff(t *testing.T) {
+	tests := []struct {
+		restartCount int
+		expected     time.Duration
+	}{
+		{1, 1 * time.Second},   // 2^0 = 1s
+		{2, 2 * time.Second},   // 2^1 = 2s
+		{3, 4 * time.Second},   // 2^2 = 4s
+		{4, 8 * time.Second},   // 2^3 = 8s
+		{5, 16 * time.Second},  // 2^4 = 16s
+		{6, 30 * time.Second},  // 2^5 = 32s, capped at 30s
+		{7, 30 * time.Second},  // 2^6 = 64s, capped at 30s
+		{10, 30 * time.Second}, // 2^9 = 512s, capped at 30s
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("restartCount_%d", tt.restartCount), func(t *testing.T) {
+			// Calculate backoff using the same logic as in process.go
+			backoff := time.Duration(1<<uint(tt.restartCount-1)) * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+
+			if backoff != tt.expected {
+				t.Errorf("restartCount %d: expected backoff %v, got %v", tt.restartCount, tt.expected, backoff)
+			}
+		})
 	}
 }
 

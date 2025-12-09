@@ -277,9 +277,10 @@ func (p *Process) monitor() {
 				p.restartCount++
 				if p.restartCount <= p.config.StartRetries {
 					// Wait before restarting (exponential backoff)
-					backoff := time.Duration(p.restartCount) * time.Second
-					if backoff > 10*time.Second {
-						backoff = 10 * time.Second
+					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
+					backoff := time.Duration(1<<uint(p.restartCount-1)) * time.Second
+					if backoff > 30*time.Second {
+						backoff = 30 * time.Second
 					}
 					time.Sleep(backoff)
 
