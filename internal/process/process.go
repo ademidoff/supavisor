@@ -33,6 +33,8 @@ type Process struct {
 	// File handles for logs
 	stdoutFile *os.File
 	stderrFile *os.File
+	// sharedLogFile indicates if stdout and stderr share the same file handle
+	sharedLogFile bool
 
 	// Control channels
 	stopChan    chan struct{}
@@ -303,50 +305,99 @@ func (p *Process) monitor() {
 
 // setupLogFiles sets up log file rotation
 func (p *Process) setupLogFiles() error {
-	if p.config.StdoutLogfile != "" {
+	// Check if stdout and stderr point to the same file
+	stdoutPath := p.config.StdoutLogfile
+	stderrPath := p.config.StderrLogfile
+	p.sharedLogFile = stdoutPath != "" && stderrPath != "" && stdoutPath == stderrPath
+
+	if p.sharedLogFile {
+		// Both stdout and stderr use the same file
 		// Ensure directory exists
-		dir := getDir(p.config.StdoutLogfile)
+		dir := getDir(stdoutPath)
 		if dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				return fmt.Errorf("failed to create log directory: %w", err)
 			}
 		}
 
-		file, err := os.OpenFile(p.config.StdoutLogfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		file, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return fmt.Errorf("failed to open stdout log: %w", err)
+			return fmt.Errorf("failed to open shared log file: %w", err)
 		}
 		p.stdoutFile = file
+		p.stderrFile = file // Use the same file handle for both
+
+		// Use the maximum of the two maxbytes settings for rotation
+		maxBytes := p.config.StdoutLogfileMaxBytes
+		if p.config.StderrLogfileMaxBytes > maxBytes {
+			maxBytes = p.config.StderrLogfileMaxBytes
+		}
+		// Use the maximum of the two backups settings
+		backups := p.config.StdoutLogfileBackups
+		if p.config.StderrLogfileBackups > backups {
+			backups = p.config.StderrLogfileBackups
+		}
+		// Use the maximum of the two maxage settings
+		maxAge := p.config.StdoutLogfileMaxAge
+		if p.config.StderrLogfileMaxAge > maxAge {
+			maxAge = p.config.StderrLogfileMaxAge
+		}
 
 		p.stdoutRotator = logrotate.NewRotator(
-			p.config.StdoutLogfile,
-			p.config.StdoutLogfileMaxBytes,
-			p.config.StdoutLogfileBackups,
-			p.config.StdoutLogfileMaxAge,
+			stdoutPath,
+			maxBytes,
+			backups,
+			maxAge,
 		)
-	}
-
-	if p.config.StderrLogfile != "" {
-		// Ensure directory exists
-		dir := getDir(p.config.StderrLogfile)
-		if dir != "" {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return fmt.Errorf("failed to create log directory: %w", err)
+		// Don't create a separate stderr rotator
+		p.stderrRotator = nil
+	} else {
+		// Separate files for stdout and stderr
+		if stdoutPath != "" {
+			// Ensure directory exists
+			dir := getDir(stdoutPath)
+			if dir != "" {
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					return fmt.Errorf("failed to create log directory: %w", err)
+				}
 			}
+
+			file, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to open stdout log: %w", err)
+			}
+			p.stdoutFile = file
+
+			p.stdoutRotator = logrotate.NewRotator(
+				stdoutPath,
+				p.config.StdoutLogfileMaxBytes,
+				p.config.StdoutLogfileBackups,
+				p.config.StdoutLogfileMaxAge,
+			)
 		}
 
-		file, err := os.OpenFile(p.config.StderrLogfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open stderr log: %w", err)
-		}
-		p.stderrFile = file
+		if stderrPath != "" {
+			// Ensure directory exists
+			dir := getDir(stderrPath)
+			if dir != "" {
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					return fmt.Errorf("failed to create log directory: %w", err)
+				}
+			}
 
-		p.stderrRotator = logrotate.NewRotator(
-			p.config.StderrLogfile,
-			p.config.StderrLogfileMaxBytes,
-			p.config.StderrLogfileBackups,
-			p.config.StderrLogfileMaxAge,
-		)
+			file, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to open stderr log: %w", err)
+			}
+			p.stderrFile = file
+
+			p.stderrRotator = logrotate.NewRotator(
+				stderrPath,
+				p.config.StderrLogfileMaxBytes,
+				p.config.StderrLogfileBackups,
+				p.config.StderrLogfileMaxAge,
+			)
+		}
 	}
 
 	// Start log rotation monitoring
@@ -363,14 +414,24 @@ func (p *Process) monitorLogRotation() {
 	for {
 		select {
 		case <-ticker.C:
-			if p.stdoutRotator != nil {
-				if err := p.stdoutRotator.CheckAndRotate(); err != nil {
-					// Log error but continue
+			if p.sharedLogFile {
+				// Only check stdout rotator since both streams share the same file
+				if p.stdoutRotator != nil {
+					if err := p.stdoutRotator.CheckAndRotate(); err != nil {
+						// Log error but continue
+					}
 				}
-			}
-			if p.stderrRotator != nil {
-				if err := p.stderrRotator.CheckAndRotate(); err != nil {
-					// Log error but continue
+			} else {
+				// Check both rotators separately
+				if p.stdoutRotator != nil {
+					if err := p.stdoutRotator.CheckAndRotate(); err != nil {
+						// Log error but continue
+					}
+				}
+				if p.stderrRotator != nil {
+					if err := p.stderrRotator.CheckAndRotate(); err != nil {
+						// Log error but continue
+					}
 				}
 			}
 		case <-p.ctx.Done():
@@ -381,13 +442,23 @@ func (p *Process) monitorLogRotation() {
 
 // closeLogFiles closes log file handles
 func (p *Process) closeLogFiles() {
-	if p.stdoutFile != nil {
-		p.stdoutFile.Close()
-		p.stdoutFile = nil
-	}
-	if p.stderrFile != nil {
-		p.stderrFile.Close()
-		p.stderrFile = nil
+	if p.sharedLogFile {
+		// Only close once since both stdout and stderr share the same file handle
+		if p.stdoutFile != nil {
+			p.stdoutFile.Close()
+			p.stdoutFile = nil
+			p.stderrFile = nil // Clear the reference but don't close again
+		}
+	} else {
+		// Close both files separately
+		if p.stdoutFile != nil {
+			p.stdoutFile.Close()
+			p.stdoutFile = nil
+		}
+		if p.stderrFile != nil && p.stderrFile != p.stdoutFile {
+			p.stderrFile.Close()
+			p.stderrFile = nil
+		}
 	}
 }
 

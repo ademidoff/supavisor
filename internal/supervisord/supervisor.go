@@ -2,6 +2,7 @@ package supervisord
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -108,7 +109,7 @@ func (s *Supervisord) Stop() error {
 	for name, proc := range s.processes {
 		if err := proc.Stop(); err != nil {
 			// Log error but continue
-			fmt.Printf("Error stopping process %s: %v\n", name, err)
+			log.Printf("Error stopping process %s: %v\n", name, err)
 		}
 	}
 	s.processMutex.Unlock()
@@ -129,7 +130,7 @@ func (s *Supervisord) startAutostartProcesses() {
 	// Get topological sort order
 	order, err := s.dependencyGraph.TopologicalSort()
 	if err != nil {
-		fmt.Printf("Warning: failed to get startup order: %v\n", err)
+		log.Printf("Warning: failed to get startup order: %v\n", err)
 		// Start processes in config order
 		for name, progConfig := range s.config.Programs {
 			if progConfig.Autostart {
@@ -148,8 +149,46 @@ func (s *Supervisord) startAutostartProcesses() {
 
 		if progConfig.Autostart {
 			if err := s.StartProcess(name); err != nil {
-				fmt.Printf("Failed to start process %s: %v\n", name, err)
+				log.Printf("Failed to start process %s: %v\n", name, err)
+			} else {
+				// Give the process a moment to transition from STARTING to RUNNING
+				// This helps dependent processes that check immediately
+				time.Sleep(100 * time.Millisecond)
 			}
+		}
+	}
+}
+
+// waitForSingleDependency waits for a single dependency to be running
+func (s *Supervisord) waitForSingleDependency(dep string) error {
+	// Wait up to 30 seconds for the dependency to be running
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("timeout waiting for dependency %s", dep)
+		case <-ticker.C:
+			s.processMutex.RLock()
+			depProc, exists := s.processes[dep]
+			if !exists {
+				s.processMutex.RUnlock()
+				// Process doesn't exist yet, wait for it to be created
+				continue
+			}
+			state := depProc.GetState()
+			s.processMutex.RUnlock()
+
+			if state == process.StateRunning {
+				return nil
+			}
+			// If it's not Starting or Running, it failed
+			if state != process.StateStarting {
+				return fmt.Errorf("dependency %s is in state %s", dep, state)
+			}
+			// Still starting, wait more
 		}
 	}
 }
@@ -175,12 +214,43 @@ func (s *Supervisord) StartProcess(name string) error {
 		proc.Stop()
 	}
 
-	// Check dependencies
+	// Check dependencies and wait for them to be running if they're starting
 	deps := s.dependencyGraph.GetDependencies(name)
 	for _, dep := range deps {
 		depProc, exists := s.processes[dep]
-		if !exists || depProc.GetState() != process.StateRunning {
-			return fmt.Errorf("dependency %s is not running", dep)
+		if !exists {
+			// Dependency doesn't exist yet, wait for it to be created and running
+			// Release the lock while waiting to avoid deadlock
+			s.processMutex.Unlock()
+			if err := s.waitForSingleDependency(dep); err != nil {
+				s.processMutex.Lock()
+				return fmt.Errorf("dependency %s failed to start: %w", dep, err)
+			}
+			s.processMutex.Lock()
+			// Re-check after waiting
+			depProc, exists = s.processes[dep]
+			if !exists || depProc.GetState() != process.StateRunning {
+				return fmt.Errorf("dependency %s is not running", dep)
+			}
+			continue
+		}
+		state := depProc.GetState()
+		if state == process.StateStarting {
+			// Dependency is starting, wait for it to become running
+			// Release the lock while waiting to avoid deadlock
+			s.processMutex.Unlock()
+			if err := s.waitForSingleDependency(dep); err != nil {
+				s.processMutex.Lock()
+				return fmt.Errorf("dependency %s failed to start: %w", dep, err)
+			}
+			s.processMutex.Lock()
+			// Re-check the state after waiting
+			depProc, exists = s.processes[dep]
+			if !exists || depProc.GetState() != process.StateRunning {
+				return fmt.Errorf("dependency %s is not running", dep)
+			}
+		} else if state != process.StateRunning {
+			return fmt.Errorf("dependency %s is not running (state: %s)", dep, state)
 		}
 	}
 
