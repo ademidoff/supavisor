@@ -25,8 +25,10 @@ func logError(format string, args ...any) {
 
 func main() {
 	var configPath string
+	var logFilePath string
 	flag.StringVar(&configPath, "c", "/etc/go-supervisord/supervisord.conf", "Path to configuration file")
 	flag.StringVar(&configPath, "config", "/etc/go-supervisord/supervisord.conf", "Path to configuration file")
+	flag.StringVar(&logFilePath, "logfile", "", "Optional path to log file (logs always go to stdout)")
 	flag.Parse()
 
 	if configPath == "" {
@@ -41,21 +43,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup supervisord's own logfile if configured
-	if cfg.Supervisord.LogFile != "" {
+	// Setup logging: always to stdout, optionally to file if flag is set
+	log.SetOutput(os.Stdout)
+	log.SetFlags(log.LstdFlags)
+
+	if logFilePath != "" {
 		// Ensure log directory exists
-		if dir := filepath.Dir(cfg.Supervisord.LogFile); dir != "" && dir != "." {
+		if dir := filepath.Dir(logFilePath); dir != "" && dir != "." {
 			if err := os.MkdirAll(dir, 0755); err != nil {
-				logError("Error: failed to create log directory: %v\n", err)
+				log.Printf("Error: failed to create log directory: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
 		// Open log file for appending
 		var err error
-		logFile, err = os.OpenFile(cfg.Supervisord.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logFile, err = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			logError("Error: failed to open log file: %v\n", err)
+			log.Printf("Error: failed to open log file: %v\n", err)
 			os.Exit(1)
 		}
 		defer logFile.Close()
@@ -63,7 +68,6 @@ func main() {
 		// Set log output to both stdout and the log file
 		multiWriter := io.MultiWriter(os.Stdout, logFile)
 		log.SetOutput(multiWriter)
-		log.SetFlags(log.LstdFlags)
 	}
 
 	// Create supervisord
