@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/ademidoff/go-supervisord/pkg/api"
 )
@@ -25,32 +26,9 @@ func main() {
 	command := os.Args[1]
 	args := os.Args[2:]
 
-	// Connect to supervisord
-	conn, err := net.Dial("unix", socketPath) //nolint:noctx
+	resp, err := sendRequest(socketPath, command, args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to connect to supervisord: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Make sure the supervisord daemon is running\n")
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	// Send request
-	req := api.Request{
-		Command: command,
-		Args:    args,
-	}
-
-	encoder := json.NewEncoder(conn)
-	if err := encoder.Encode(&req); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to send request: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Receive response
-	decoder := json.NewDecoder(conn)
-	var resp api.Response
-	if err := decoder.Decode(&resp); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to receive response: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
@@ -63,7 +41,7 @@ func main() {
 	// Print response based on command
 	switch command {
 	case "status":
-		printStatus(resp)
+		printStatus(*resp)
 	case "start", "stop", "restart", "reload", "shutdown":
 		fmt.Println(resp.Message)
 	default:
@@ -138,6 +116,47 @@ func getInt(m map[string]interface{}, key string) int {
 	}
 
 	return 0
+}
+
+// sendRequest connects to supervisord, sends a request, and returns the response.
+// It includes timeouts to prevent hanging when the daemon is not running.
+func sendRequest(socketPath, command string, args []string) (*api.Response, error) {
+	// Connect to supervisord with timeout
+	dialer := net.Dialer{
+		Timeout: 5 * time.Second,
+	}
+	conn, err := dialer.Dial("unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("Error: failed to connect to supervisord: %v\nMake sure the supervisord daemon is running", err)
+	}
+	defer conn.Close()
+
+	// Set read and write deadlines to prevent hanging
+	// Use a shorter timeout for faster failure when daemon is not responding
+	deadline := time.Now().Add(5 * time.Second)
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("Error: failed to set connection deadline: %v", err)
+	}
+
+	// Send request
+	req := api.Request{
+		Command: command,
+		Args:    args,
+	}
+
+	encoder := json.NewEncoder(conn)
+	if err := encoder.Encode(&req); err != nil {
+		return nil, fmt.Errorf("Error: failed to send request: %v", err)
+	}
+
+	// Receive response
+	decoder := json.NewDecoder(conn)
+	var resp api.Response
+	if err := decoder.Decode(&resp); err != nil {
+		return nil, fmt.Errorf("Error: failed to receive response: %v\nMake sure the supervisord daemon is running and responding", err)
+	}
+
+	return &resp, nil
 }
 
 func printUsage() {

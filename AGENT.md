@@ -18,6 +18,7 @@ supervisord manages processes using the following pattern:
 - Use `testify/assert` and `testify/require`
 - Mock generation via `mockery` (config in `.mockery.yaml`)
 - Run tests: `make test`
+- Cover all code with tests
 
 ## Common Patterns
 
