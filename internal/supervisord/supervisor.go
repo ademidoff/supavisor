@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -339,6 +340,11 @@ func (s *Supervisord) GetStatus() []ProcessStatusInfo {
 			Uptime:       uptime,
 		})
 	}
+
+	// Sort by process name alphabetically
+	sort.Slice(statuses, func(i, j int) bool {
+		return statuses[i].Name < statuses[j].Name
+	})
 
 	return statuses
 }
