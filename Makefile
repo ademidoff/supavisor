@@ -12,7 +12,8 @@ build:
 	@go build -o bin/supervisord ./cmd/supervisord
 	@echo "Building supervisorctl..."
 	@go build -o bin/supervisorctl ./cmd/supervisorctl
-	@echo "Build complete! Binaries are in ./bin/"
+	@echo "Build complete."
+	@ls -l bin/
 
 # Run all tests
 test:

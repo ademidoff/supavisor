@@ -36,17 +36,14 @@ supervisord manages processes using the following pattern:
 - Don't inline comments (i.e. `code // comment`), always put comments on separate lines
 
 ### Error Handling
-- Use `status.Error()` for gRPC errors with proper codes
 - Wrap errors with context: `fmt.Errorf("descriptive context: %w", err)`
 - Return early on errors to avoid deep nesting
 - Use `errors.Is()` and `errors.As()` for error type checking
-- Use `errors.WithStack()` wisely and only when stack traces are needed
 - Use standard `errors` package
 
 ### Logging
-- Use structured logging with `logrus`
-- Pass `*logrus.Entry` (not `*logrus.Logger`) to maintain context
-- Format: `s.l.WithField("key", value).Error("message")`
+- Use structured logging with `slog`
+- Format: `slog.Info("message", "key", value)`
 
 ## RESTful conventions
 - Use RESTful conventions (GET/POST/PUT/DELETE with resource paths)

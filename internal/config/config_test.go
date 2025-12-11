@@ -15,6 +15,7 @@ func TestParseConfigFile(t *testing.T) {
 logfile=/var/log/supervisord/supervisord.log
 pidfile=/var/run/supervisord.pid
 socket=/tmp/go-supervisord.sock
+log_format=json
 
 [program:testapp]
 command=/usr/bin/testapp
@@ -45,6 +46,10 @@ stdout_logfile_maxage=7
 		t.Errorf("Expected logfile /var/log/supervisord/supervisord.log, got %s", cfg.Supervisord.LogFile)
 	}
 
+	if cfg.Supervisord.LogFormat != "json" {
+		t.Errorf("Expected log_format json, got %s", cfg.Supervisord.LogFormat)
+	}
+
 	// Check program config
 	prog, exists := cfg.Programs["testapp"]
 	if !exists {
@@ -69,6 +74,33 @@ stdout_logfile_maxage=7
 
 	if len(prog.DependsOn) != 1 || prog.DependsOn[0] != "database" {
 		t.Errorf("Expected depends_on to be [database], got %v", prog.DependsOn)
+	}
+}
+
+func TestParseConfigFile_DefaultLogFormat(t *testing.T) {
+	// Create a temporary config file without log_format
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "test_default.conf")
+
+	configContent := `[supervisord]
+logfile=/var/log/supervisord/supervisord.log
+
+[program:testapp]
+command=/usr/bin/testapp
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	cfg, err := ParseConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to parse config file: %v", err)
+	}
+
+	if cfg.Supervisord.LogFormat != "text" {
+		t.Errorf("Expected default log_format text, got %s", cfg.Supervisord.LogFormat)
 	}
 }
 

@@ -3,7 +3,7 @@ package process
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -116,18 +116,18 @@ func (p *Process) Start() error {
 		return fmt.Errorf("process %s is already running or starting", p.config.Name)
 	}
 
-	log.Printf("%s: setting state to STARTING\n", p.config.Name)
+	slog.Info("Setting state to STARTING", "process", p.config.Name)
 	p.setState(StateStarting)
 
 	// Setup log files
-	log.Printf("%s: setting up log files\n", p.config.Name)
+	slog.Info("Setting up log files", "process", p.config.Name)
 	if err := p.setupLogFiles(); err != nil {
 		p.setState(StateFatal)
 		return fmt.Errorf("failed to setup log files: %w", err)
 	}
 
 	// Parse command
-	log.Printf("%s: parsing command: %s\n", p.config.Name, p.config.Command)
+	slog.Info("Parsing command", "process", p.config.Name, "command", p.config.Command)
 	parts := parseCommand(p.config.Command)
 	if len(parts) == 0 {
 		p.setState(StateFatal)
@@ -135,19 +135,19 @@ func (p *Process) Start() error {
 	}
 
 	// Create command
-	log.Printf("%s: creating command: %v\n", p.config.Name, parts)
+	slog.Info("Creating command", "process", p.config.Name, "command_parts", parts)
 	p.cmd = exec.CommandContext(p.ctx, parts[0], parts[1:]...)
 
 	// Set working directory
 	if p.config.Directory != "" {
-		log.Printf("%s: setting working directory: %s\n", p.config.Name, p.config.Directory)
+		slog.Info("Setting working directory", "process", p.config.Name, "directory", p.config.Directory)
 		p.cmd.Dir = p.config.Directory
 	}
 
 	// Set environment
 	env := os.Environ()
 	if len(p.config.Environment) > 0 {
-		log.Printf("%s: setting %d environment variable(s)\n", p.config.Name, len(p.config.Environment))
+		slog.Info("Setting environment variables", "process", p.config.Name, "count", len(p.config.Environment))
 	}
 	for k, v := range p.config.Environment {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
@@ -159,9 +159,9 @@ func (p *Process) Start() error {
 	p.cmd.Stderr = p.stderrFile
 
 	// Start the process
-	log.Printf("%s: executing command\n", p.config.Name)
+	slog.Info("Executing command", "process", p.config.Name)
 	if err := p.cmd.Start(); err != nil {
-		log.Printf("%s: failed to start: %v\n", p.config.Name, err)
+		slog.Error("Failed to start", "process", p.config.Name, "error", err)
 		p.setState(StateFatal)
 		return fmt.Errorf("failed to start process: %w", err)
 	}
@@ -169,23 +169,23 @@ func (p *Process) Start() error {
 	p.pid = p.cmd.Process.Pid
 	p.startTime = time.Now()
 	p.lastError = nil
-	log.Printf("%s: started with PID %d\n", p.config.Name, p.pid)
+	slog.Info("Started process", "process", p.config.Name, "pid", p.pid)
 
 	// Monitor the process
 	go p.monitor()
 
 	// Wait for startsecs to determine if start was successful
 	go func() {
-		log.Printf("%s: waiting %d seconds before checking if start was successful\n", p.config.Name, p.config.StartSecs)
+		slog.Info("Waiting before checking start success", "process", p.config.Name, "seconds", p.config.StartSecs)
 		time.Sleep(time.Duration(p.config.StartSecs) * time.Second)
 		if p.GetState() == StateStarting {
 			// Check if process is still running
 			if p.cmd.Process != nil {
 				if err := p.cmd.Process.Signal(syscall.Signal(0)); err == nil {
-					log.Printf("%s: start successful, setting state to RUNNING\n", p.config.Name)
+					slog.Info("Start successful, setting state to RUNNING", "process", p.config.Name)
 					p.setState(StateRunning)
 				} else {
-					log.Printf("%s: start check failed, setting state to BACKOFF\n", p.config.Name)
+					slog.Info("Start check failed, setting state to BACKOFF", "process", p.config.Name)
 					p.setState(StateBackoff)
 				}
 			}
@@ -198,16 +198,16 @@ func (p *Process) Start() error {
 // Stop stops the process
 func (p *Process) Stop() error {
 	if p.GetState() == StateStopped || p.GetState() == StateExited {
-		log.Printf("%s: already stopped or exited\n", p.config.Name)
+		slog.Info("Already stopped or exited", "process", p.config.Name)
 		return nil
 	}
 
-	log.Printf("%s: stopping process (PID: %d)\n", p.config.Name, p.pid)
+	slog.Info("Stopping process", "process", p.config.Name, "pid", p.pid)
 	p.setState(StateStopping)
 
 	if p.cmd != nil && p.cmd.Process != nil {
 		// Try graceful shutdown first
-		log.Printf("%s: sending SIGINT for graceful shutdown\n", p.config.Name)
+		slog.Info("Sending SIGINT for graceful shutdown", "process", p.config.Name)
 		p.cmd.Process.Signal(os.Interrupt)
 
 		// Wait a bit for graceful shutdown
@@ -219,13 +219,13 @@ func (p *Process) Stop() error {
 		select {
 		case <-done:
 			// Process exited gracefully
-			log.Printf("%s: exited gracefully\n", p.config.Name)
+			slog.Info("Exited gracefully", "process", p.config.Name)
 		case <-time.After(5 * time.Second):
 			// Force kill
-			log.Printf("%s: graceful shutdown timeout, sending SIGKILL\n", p.config.Name)
+			slog.Info("Graceful shutdown timeout, sending SIGKILL", "process", p.config.Name)
 			p.cmd.Process.Kill()
 			<-done
-			log.Printf("%s: force killed\n", p.config.Name)
+			slog.Info("Force killed", "process", p.config.Name)
 		}
 	}
 
@@ -234,23 +234,23 @@ func (p *Process) Stop() error {
 	p.setState(StateStopped)
 
 	// Close log files
-	log.Printf("%s: closing log files\n", p.config.Name)
+	slog.Info("Closing log files", "process", p.config.Name)
 	p.closeLogFiles()
 
-	log.Printf("%s: stopped successfully\n", p.config.Name)
+	slog.Info("Stopped successfully", "process", p.config.Name)
 	return nil
 }
 
 // Restart restarts the process
 func (p *Process) Restart() error {
-	log.Printf("%s: restarting\n", p.config.Name)
+	slog.Info("Restarting", "process", p.config.Name)
 	if err := p.Stop(); err != nil {
-		log.Printf("%s: error during stop phase of restart: %v\n", p.config.Name, err)
+		slog.Error("Error during stop phase of restart", "process", p.config.Name, "error", err)
 		return err
 	}
-	log.Printf("%s: waiting 100ms before restart\n", p.config.Name)
+	slog.Info("Waiting 100ms before restart", "process", p.config.Name)
 	time.Sleep(100 * time.Millisecond) // Brief pause
-	log.Printf("%s: starting after restart\n", p.config.Name)
+	slog.Info("Starting after restart", "process", p.config.Name)
 	return p.Start()
 }
 
@@ -284,7 +284,7 @@ func (p *Process) monitor() {
 		p.lastError = err
 
 		if p.GetState() != StateStopping {
-			log.Printf("%s: exited with code %d\n", p.config.Name, p.exitCode)
+			slog.Info("Process exited", "process", p.config.Name, "exit_code", p.exitCode)
 			p.setState(StateExited)
 
 			// Determine if we should restart
@@ -292,43 +292,40 @@ func (p *Process) monitor() {
 			switch p.config.Autorestart {
 			case config.RestartAlways:
 				shouldRestart = true
-				log.Printf("%s: autorestart policy is 'always', will restart\n", p.config.Name)
+				slog.Debug("Autorestart policy is 'always', will restart", "process", p.config.Name)
 			case config.RestartUnexpected:
 				// Restart if exit code is non-zero
 				if p.exitCode != 0 {
 					shouldRestart = true
-					log.Printf("%s: autorestart policy is 'unexpected', exit code %d is non-zero, will restart\n", p.config.Name, p.exitCode)
+					slog.Debug("Autorestart policy is 'unexpected', exit code is non-zero, will restart", "process", p.config.Name, "exit_code", p.exitCode)
 				} else {
-					log.Printf("%s: autorestart policy is 'unexpected', exit code %d is zero, will not restart\n", p.config.Name, p.exitCode)
+					slog.Debug("Autorestart policy is 'unexpected', exit code is zero, will not restart", "process", p.config.Name, "exit_code", p.exitCode)
 				}
 			case config.RestartNever:
 				shouldRestart = false
-				log.Printf("%s: autorestart policy is 'never', will not restart\n", p.config.Name)
+				slog.Debug("Autorestart policy is 'never', will not restart", "process", p.config.Name)
 			}
 
 			if shouldRestart {
 				p.restartCount++
-				log.Printf("%s: restart attempt %d/%d\n", p.config.Name, p.restartCount, p.config.StartRetries)
+				slog.Info("Restart attempt", "process", p.config.Name, "attempt", p.restartCount, "max_retries", p.config.StartRetries)
 				if p.restartCount <= p.config.StartRetries {
 					// Wait before restarting (exponential backoff)
 					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
-					backoff := time.Duration(1<<uint(p.restartCount-1)) * time.Second
-					if backoff > 30*time.Second {
-						backoff = 30 * time.Second
-					}
-					log.Printf("%s: waiting %v before restart (exponential backoff)\n", p.config.Name, backoff)
+					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second)
+					slog.Info("Waiting before restart", "process", p.config.Name, "backoff", backoff)
 					time.Sleep(backoff)
 
 					if p.GetState() != StateStopping {
-						log.Printf("%s: attempting restart after backoff\n", p.config.Name)
+						slog.Info("Attempting restart after backoff", "process", p.config.Name)
 						p.setState(StateBackoff)
 						if err := p.Start(); err != nil {
-							log.Printf("%s: restart failed: %v\n", p.config.Name, err)
+							slog.Error("Restart failed", "process", p.config.Name, "error", err)
 							p.setState(StateFatal)
 						}
 					}
 				} else {
-					log.Printf("%s: exceeded maximum restart attempts (%d), setting state to FATAL\n", p.config.Name, p.config.StartRetries)
+					slog.Error("Exceeded maximum restart attempts, setting state to FATAL", "process", p.config.Name, "max_retries", p.config.StartRetries)
 					p.setState(StateFatal)
 				}
 			} else {

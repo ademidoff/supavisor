@@ -20,9 +20,10 @@ const (
 
 // SupervisorConfig represents the main supervisord configuration
 type SupervisorConfig struct {
-	LogFile string
-	PidFile string
-	Socket  string
+	LogFile   string
+	PidFile   string
+	Socket    string
+	LogFormat string
 }
 
 // ProgramConfig represents configuration for a single program
@@ -71,6 +72,7 @@ func ParseConfigFile(path string) (*Config, error) {
 		config.Supervisord.LogFile = sec.Key("logfile").MustString("/var/log/supervisord/supervisord.log")
 		config.Supervisord.PidFile = sec.Key("pidfile").MustString("/var/run/supervisord.pid")
 		config.Supervisord.Socket = sec.Key("socket").MustString("/tmp/go-supervisord.sock")
+		config.Supervisord.LogFormat = sec.Key("log_format").MustString("text")
 	}
 
 	// Parse [program:*] sections
