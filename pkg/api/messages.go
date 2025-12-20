@@ -1,4 +1,4 @@
-// Package api contains the API messages for the supervisord and supervisorctl.
+// Package api contains the API messages for the supavisor and sctl.
 package api //nolint:revive
 
 // Request represents a request from the CLI

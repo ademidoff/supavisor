@@ -18,8 +18,8 @@ const (
 	RestartUnexpected RestartPolicy = "unexpected"
 )
 
-// SupervisorConfig represents the main supervisord configuration
-type SupervisorConfig struct {
+// SupavisorConfig represents the main supavisor configuration
+type SupavisorConfig struct {
 	LogFile   string
 	PidFile   string
 	Socket    string
@@ -52,8 +52,8 @@ type ProgramConfig struct {
 
 // Config represents the complete configuration
 type Config struct {
-	Supervisord SupervisorConfig
-	Programs    map[string]*ProgramConfig
+	Supavisor SupavisorConfig
+	Programs  map[string]*ProgramConfig
 }
 
 // ParseConfigFile parses an INI configuration file
@@ -67,12 +67,12 @@ func ParseConfigFile(path string) (*Config, error) {
 		Programs: make(map[string]*ProgramConfig),
 	}
 
-	// Parse [supervisord] section
-	if sec := cfg.Section("supervisord"); sec != nil {
-		config.Supervisord.LogFile = sec.Key("logfile").MustString("/var/log/supervisord/supervisord.log")
-		config.Supervisord.PidFile = sec.Key("pidfile").MustString("/var/run/supervisord.pid")
-		config.Supervisord.Socket = sec.Key("socket").MustString("/tmp/go-supervisord.sock")
-		config.Supervisord.LogFormat = sec.Key("log_format").MustString("text")
+	// Parse [supavisor] section
+	if sec := cfg.Section("supavisor"); sec != nil {
+		config.Supavisor.LogFile = sec.Key("logfile").MustString("/var/log/supavisor/supavisor.log")
+		config.Supavisor.PidFile = sec.Key("pidfile").MustString("/var/run/supavisor.pid")
+		config.Supavisor.Socket = sec.Key("socket").MustString("/tmp/supavisor.sock")
+		config.Supavisor.LogFormat = sec.Key("log_format").MustString("text")
 	}
 
 	// Parse [program:*] sections
@@ -259,9 +259,9 @@ func (c *Config) EnsureLogDirectories() error {
 		}
 	}
 
-	// Create supervisord log directory
-	if c.Supervisord.LogFile != "" {
-		dir := getDir(c.Supervisord.LogFile)
+	// Create supavisor log directory
+	if c.Supavisor.LogFile != "" {
+		dir := getDir(c.Supavisor.LogFile)
 		if dir != "" {
 			dirs[dir] = true
 		}

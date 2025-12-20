@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ademidoff/go-supervisord/internal/config"
-	"github.com/ademidoff/go-supervisord/internal/logrotate"
+	"github.com/ademidoff/supavisor/internal/config"
+	"github.com/ademidoff/supavisor/internal/logrotate"
 )
 
 // Process represents a managed process

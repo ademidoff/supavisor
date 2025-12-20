@@ -1,12 +1,12 @@
-# Go-supervisord Development Guidelines
+# Supavisor Development Guidelines
 
-**go-supervisord** is a supervisord daemon that manages the configuration of processes and exposes an API for interacting with them. The API is also consumed by [supervisorctl tool](https://github.com/ademidoff/go-supervisord/tree/main/cmd/supervisorctl).
+**supavisor** is a process supervisor daemon that manages the configuration of processes and exposes an API for interacting with them. The API is also consumed by [sctl tool](https://github.com/ademidoff/supavisor/tree/main/cmd/sctl).
 
 ## Architecture Patterns
 
-supervisord manages processes using the following pattern:
+supavisor manages processes using the following pattern:
 - Processes are configured in a configuration file
-- Processes are started and stopped using the supervisorctl tool
+- Processes are started and stopped using the sctl tool
 - Processes are monitored and restarted if they exit
 - Processes are logged to a log file
 - Processes are rotated if they exceed a certain size

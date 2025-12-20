@@ -1,4 +1,4 @@
-.PHONY: build test clean lint lint-install
+.PHONY: build test clean run lint lint-install
 
 # Version of golangci-lint to use
 GOLANGCI_LINT_VERSION := v2.7.2
@@ -6,12 +6,12 @@ GOLANGCI_LINT_VERSION := v2.7.2
 # Path to golangci-lint binary
 GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
 
-# Build both supervisord and supervisorctl binaries
+# Build both supavisor and sctl binaries
 build:
-	@echo "Building supervisord..."
-	@go build -o bin/supervisord ./cmd/supervisord
-	@echo "Building supervisorctl..."
-	@go build -o bin/supervisorctl ./cmd/supervisorctl
+	@echo "Building supavisor..."
+	@go build -o bin/supavisor ./cmd/supavisor
+	@echo "Building sctl..."
+	@go build -o bin/sctl ./cmd/sctl
 	@echo "Build complete."
 	@ls -l bin/
 
@@ -46,3 +46,9 @@ clean:
 	@rm -rf bin/
 	@go clean
 	@echo "Clean complete!"
+
+run:
+	@echo "Running supavisor..."
+	@./bin/supavisor -c supavisor.conf &
+	@echo "Running sctl..."
+	@./bin/sctl status

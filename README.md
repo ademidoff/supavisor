@@ -1,6 +1,6 @@
-# Go supervisord
+# Supavisor
 
-A process supervisord daemon written in Go, inspired by supervisord, that efficiently manages child processes with dependency support, config-based lifecycle management, and log rotation.
+A process supervisor daemon written in Go, inspired by supervisord, that efficiently manages child processes with dependency support, config-based lifecycle management, and log rotation.
 
 ## Features
 
@@ -15,20 +15,20 @@ A process supervisord daemon written in Go, inspired by supervisord, that effici
 ## Installation
 
 ```bash
-git clone https://github.com/ademidoff/go-supervisord
-cd go-supervisord
+git clone https://github.com/ademidoff/supavisor
+cd supavisor
 make build
 ```
 
 ## Quick Start
 
-1. Create a configuration file (e.g., `supervisord.conf`):
+1. Create a configuration file (e.g., `supavisor.conf`):
 
 ```ini
-[supervisord]
-logfile=/var/log/supervisord/supervisord.log
-pidfile=/var/run/supervisord.pid
-socket=/tmp/go-supervisord.sock
+[supavisor]
+logfile=/var/log/supavisor/supavisor.log
+pidfile=/var/run/supavisor.pid
+socket=/tmp/supavisor.sock
 
 [program:webapp]
 command=/usr/bin/python app.py
@@ -51,39 +51,39 @@ stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=10
 ```
 
-2. Start the supervisord daemon:
+2. Start the supavisor daemon:
 
 ```bash
-./supervisord -c supervisord.conf
+./supavisor -c supavisor.conf
 ```
 
 3. Use the CLI tool to manage processes:
 
 ```bash
 # Check status
-./supervisorctl status
+./sctl status
 
 # Start a process
-./supervisorctl start webapp
+./sctl start webapp
 
 # Stop a process
-./supervisorctl stop webapp
+./sctl stop webapp
 
 # Restart a process
-./supervisorctl restart webapp
+./sctl restart webapp
 
 # Reload configuration
-./supervisorctl reload
+./sctl reload
 
-# Shutdown supervisord
-./supervisorctl shutdown
+# Shutdown supavisor
+./sctl shutdown
 ```
 
 ## Configuration
 
-### [supervisord] Section
+### [supavisor] Section
 
-- `logfile`: Path to supervisord's own log file
+- `logfile`: Path to supavisor's own log file
 - `pidfile`: Path to PID file
 - `socket`: Path to Unix domain socket for CLI communication
 
@@ -93,7 +93,7 @@ Each program section defines a process to manage:
 
 - `command`: Command to run (required)
 - `directory`: Working directory for the process
-- `autostart`: Start process automatically on supervisord startup (default: true)
+- `autostart`: Start process automatically on supavisor startup (default: true)
 - `autorestart`: Restart policy - `always`, `never`, or `unexpected` (default: unexpected)
 - `startsecs`: Seconds to wait before considering start successful (default: 1)
 - `startretries`: Number of retries before giving up (default: 3)
@@ -123,7 +123,7 @@ Each program section defines a process to manage:
 
 ## Dependency Management
 
-Processes can depend on other processes using the `depends_on` option. The supervisord will:
+Processes can depend on other processes using the `depends_on` option. The supavisor will:
 
 1. Start processes in dependency order (topological sort)
 2. Ensure dependencies are running before starting dependent processes
@@ -192,13 +192,13 @@ Note: Values containing commas should be quoted. For example: `PATH="/usr/bin:/u
 
 ## Architecture
 
-- `cmd/supervisord`: Main daemon entry point
-- `cmd/supervisorctl`: CLI tool for managing processes
+- `cmd/supavisor`: Main daemon entry point
+- `cmd/sctl`: CLI tool for managing processes
 - `internal/config`: Configuration file parsing
 - `internal/process`: Process lifecycle management
 - `internal/dependency`: Dependency resolution engine
 - `internal/logrotate`: Log rotation and retention
-- `internal/supervisord`: Core supervisord daemon
+- `internal/supavisor`: Core supavisor daemon
 - `pkg/api`: Public API types for IPC communication
 
 ## License
@@ -208,4 +208,3 @@ MIT
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
-

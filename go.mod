@@ -1,4 +1,4 @@
-module github.com/ademidoff/go-supervisord
+module github.com/ademidoff/supavisor
 
 go 1.25.3
 

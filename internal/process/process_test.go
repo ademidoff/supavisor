@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ademidoff/go-supervisord/internal/config"
+	"github.com/ademidoff/supavisor/internal/config"
 )
 
 func TestSetupLogFiles_SharedStdoutStderr(t *testing.T) {

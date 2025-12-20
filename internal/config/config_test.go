@@ -11,10 +11,10 @@ func TestParseConfigFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test.conf")
 
-	configContent := `[supervisord]
-logfile=/var/log/supervisord/supervisord.log
-pidfile=/var/run/supervisord.pid
-socket=/tmp/go-supervisord.sock
+	configContent := `[supavisor]
+logfile=/var/log/supavisor/supavisor.log
+pidfile=/var/run/supavisor.pid
+socket=/tmp/supavisor.sock
 log_format=json
 
 [program:testapp]
@@ -41,13 +41,13 @@ stdout_logfile_maxage=7
 		t.Fatalf("Failed to parse config file: %v", err)
 	}
 
-	// Check supervisord config
-	if cfg.Supervisord.LogFile != "/var/log/supervisord/supervisord.log" {
-		t.Errorf("Expected logfile /var/log/supervisord/supervisord.log, got %s", cfg.Supervisord.LogFile)
+	// Check supavisor config
+	if cfg.Supavisor.LogFile != "/var/log/supavisor/supavisor.log" {
+		t.Errorf("Expected logfile /var/log/supavisor/supavisor.log, got %s", cfg.Supavisor.LogFile)
 	}
 
-	if cfg.Supervisord.LogFormat != "json" {
-		t.Errorf("Expected log_format json, got %s", cfg.Supervisord.LogFormat)
+	if cfg.Supavisor.LogFormat != "json" {
+		t.Errorf("Expected log_format json, got %s", cfg.Supavisor.LogFormat)
 	}
 
 	// Check program config
@@ -82,8 +82,8 @@ func TestParseConfigFile_DefaultLogFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test_default.conf")
 
-	configContent := `[supervisord]
-logfile=/var/log/supervisord/supervisord.log
+	configContent := `[supavisor]
+logfile=/var/log/supavisor/supavisor.log
 
 [program:testapp]
 command=/usr/bin/testapp
@@ -99,8 +99,8 @@ command=/usr/bin/testapp
 		t.Fatalf("Failed to parse config file: %v", err)
 	}
 
-	if cfg.Supervisord.LogFormat != "text" {
-		t.Errorf("Expected default log_format text, got %s", cfg.Supervisord.LogFormat)
+	if cfg.Supavisor.LogFormat != "text" {
+		t.Errorf("Expected default log_format text, got %s", cfg.Supavisor.LogFormat)
 	}
 }
 
