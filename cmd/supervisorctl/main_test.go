@@ -71,4 +71,3 @@ func TestSendRequest_TimeoutConfiguration(t *testing.T) {
 		t.Logf("Error message: %s", errorMsg)
 	}
 }
-

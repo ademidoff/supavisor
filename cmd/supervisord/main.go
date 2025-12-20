@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ademidoff/go-supervisord/internal/config"
 	"github.com/ademidoff/go-supervisord/internal/supervisord"
@@ -39,14 +40,14 @@ func main() {
 	if logFilePath != "" {
 		// Ensure log directory exists
 		if dir := filepath.Dir(logFilePath); dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, 0755); err != nil { //nolint:govet
 				fmt.Fprintf(os.Stderr, "Error: failed to create log directory: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
 		// Open log file for appending
-		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644) //nolint:govet
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to open log file: %v\n", err)
 			os.Exit(1)
@@ -59,9 +60,18 @@ func main() {
 		output = io.MultiWriter(os.Stdout, logFile)
 	}
 
+	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.LevelKey {
+			level := a.Value.Any().(slog.Level)
+			a.Value = slog.StringValue(strings.ToLower(level.String()))
+		}
+		return a
+	}
+
 	var handler slog.Handler
 	opts := &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level:       slog.LevelInfo,
+		ReplaceAttr: replaceAttr,
 	}
 
 	switch cfg.Supervisord.LogFormat {
@@ -71,19 +81,23 @@ func main() {
 		handler = slog.NewTextHandler(output, opts)
 	}
 
+	// Create a logger with setup component
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
-	// Create supervisord
-	sv, err := supervisord.NewSupervisor(cfg)
+	l := logger.With("component", "setup")
+	l.Info("Setup completed.")
+
+	// Create supervisord with main component logger
+	sv, err := supervisord.NewSupervisor(cfg, logger)
 	if err != nil {
-		slog.Error("Failed to create supervisord", "error", err)
+		l.Error("Failed to create supervisord", "error", err)
 		os.Exit(1)
 	}
 
 	// Start supervisord
 	if err := sv.Start(); err != nil {
-		slog.Error("Failed to start supervisord", "error", err)
+		l.Error("Failed to start supervisord", "error", err)
 		os.Exit(1)
 	}
 

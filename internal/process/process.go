@@ -17,6 +17,7 @@ import (
 // Process represents a managed process
 type Process struct {
 	config       *config.ProgramConfig
+	logger       *slog.Logger
 	cmd          *exec.Cmd
 	state        State
 	stateMutex   sync.RWMutex
@@ -49,10 +50,13 @@ type Process struct {
 }
 
 // NewProcess creates a new process instance
-func NewProcess(cfg *config.ProgramConfig) *Process {
+func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 	ctx, cancel := context.WithCancel(context.Background())
+	// Create a logger with the component set to the process name
+	procLogger := logger.With("component", cfg.Name)
 	return &Process{
 		config:      cfg,
+		logger:      procLogger,
 		state:       StateStopped,
 		stopChan:    make(chan struct{}),
 		restartChan: make(chan struct{}),
@@ -116,18 +120,18 @@ func (p *Process) Start() error {
 		return fmt.Errorf("process %s is already running or starting", p.config.Name)
 	}
 
-	slog.Info("Setting state to STARTING", "process", p.config.Name)
+	p.logger.Info("Setting state to STARTING")
 	p.setState(StateStarting)
 
 	// Setup log files
-	slog.Info("Setting up log files", "process", p.config.Name)
+	p.logger.Info("Setting up log files")
 	if err := p.setupLogFiles(); err != nil {
 		p.setState(StateFatal)
 		return fmt.Errorf("failed to setup log files: %w", err)
 	}
 
 	// Parse command
-	slog.Info("Parsing command", "process", p.config.Name, "command", p.config.Command)
+	p.logger.Info("Parsing command", "command", p.config.Command)
 	parts := parseCommand(p.config.Command)
 	if len(parts) == 0 {
 		p.setState(StateFatal)
@@ -135,19 +139,19 @@ func (p *Process) Start() error {
 	}
 
 	// Create command
-	slog.Info("Creating command", "process", p.config.Name, "command_parts", parts)
+	p.logger.Info("Creating command", "command_parts", parts)
 	p.cmd = exec.CommandContext(p.ctx, parts[0], parts[1:]...)
 
 	// Set working directory
 	if p.config.Directory != "" {
-		slog.Info("Setting working directory", "process", p.config.Name, "directory", p.config.Directory)
+		p.logger.Info("Setting working directory", "directory", p.config.Directory)
 		p.cmd.Dir = p.config.Directory
 	}
 
 	// Set environment
 	env := os.Environ()
 	if len(p.config.Environment) > 0 {
-		slog.Info("Setting environment variables", "process", p.config.Name, "count", len(p.config.Environment))
+		p.logger.Info("Setting environment variables", "count", len(p.config.Environment))
 	}
 	for k, v := range p.config.Environment {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
@@ -159,9 +163,9 @@ func (p *Process) Start() error {
 	p.cmd.Stderr = p.stderrFile
 
 	// Start the process
-	slog.Info("Executing command", "process", p.config.Name)
+	p.logger.Info("Executing command")
 	if err := p.cmd.Start(); err != nil {
-		slog.Error("Failed to start", "process", p.config.Name, "error", err)
+		p.logger.Error("Failed to start", "error", err)
 		p.setState(StateFatal)
 		return fmt.Errorf("failed to start process: %w", err)
 	}
@@ -169,23 +173,23 @@ func (p *Process) Start() error {
 	p.pid = p.cmd.Process.Pid
 	p.startTime = time.Now()
 	p.lastError = nil
-	slog.Info("Started process", "process", p.config.Name, "pid", p.pid)
+	p.logger.Info("Started process", "pid", p.pid)
 
 	// Monitor the process
 	go p.monitor()
 
 	// Wait for startsecs to determine if start was successful
 	go func() {
-		slog.Info("Waiting before checking start success", "process", p.config.Name, "seconds", p.config.StartSecs)
+		p.logger.Info("Waiting before checking start success", "seconds", p.config.StartSecs)
 		time.Sleep(time.Duration(p.config.StartSecs) * time.Second)
 		if p.GetState() == StateStarting {
 			// Check if process is still running
 			if p.cmd.Process != nil {
 				if err := p.cmd.Process.Signal(syscall.Signal(0)); err == nil {
-					slog.Info("Start successful, setting state to RUNNING", "process", p.config.Name)
+					p.logger.Info("Start successful, setting state to RUNNING")
 					p.setState(StateRunning)
 				} else {
-					slog.Info("Start check failed, setting state to BACKOFF", "process", p.config.Name)
+					p.logger.Info("Start check failed, setting state to BACKOFF")
 					p.setState(StateBackoff)
 				}
 			}
@@ -198,16 +202,16 @@ func (p *Process) Start() error {
 // Stop stops the process
 func (p *Process) Stop() error {
 	if p.GetState() == StateStopped || p.GetState() == StateExited {
-		slog.Info("Already stopped or exited", "process", p.config.Name)
+		p.logger.Info("Already stopped or exited")
 		return nil
 	}
 
-	slog.Info("Stopping process", "process", p.config.Name, "pid", p.pid)
+	p.logger.Info("Stopping process", "pid", p.pid)
 	p.setState(StateStopping)
 
 	if p.cmd != nil && p.cmd.Process != nil {
 		// Try graceful shutdown first
-		slog.Info("Sending SIGINT for graceful shutdown", "process", p.config.Name)
+		p.logger.Info("Sending SIGINT for graceful shutdown")
 		p.cmd.Process.Signal(os.Interrupt)
 
 		// Wait a bit for graceful shutdown
@@ -219,13 +223,13 @@ func (p *Process) Stop() error {
 		select {
 		case <-done:
 			// Process exited gracefully
-			slog.Info("Exited gracefully", "process", p.config.Name)
+			p.logger.Info("Exited gracefully")
 		case <-time.After(5 * time.Second):
 			// Force kill
-			slog.Info("Graceful shutdown timeout, sending SIGKILL", "process", p.config.Name)
+			p.logger.Info("Graceful shutdown timeout, sending SIGKILL")
 			p.cmd.Process.Kill()
 			<-done
-			slog.Info("Force killed", "process", p.config.Name)
+			p.logger.Info("Force killed")
 		}
 	}
 
@@ -234,23 +238,23 @@ func (p *Process) Stop() error {
 	p.setState(StateStopped)
 
 	// Close log files
-	slog.Info("Closing log files", "process", p.config.Name)
+	p.logger.Info("Closing log files")
 	p.closeLogFiles()
 
-	slog.Info("Stopped successfully", "process", p.config.Name)
+	p.logger.Info("Stopped successfully")
 	return nil
 }
 
 // Restart restarts the process
 func (p *Process) Restart() error {
-	slog.Info("Restarting", "process", p.config.Name)
+	p.logger.Info("Restarting")
 	if err := p.Stop(); err != nil {
-		slog.Error("Error during stop phase of restart", "process", p.config.Name, "error", err)
+		p.logger.Error("Error during stop phase of restart", "error", err)
 		return err
 	}
-	slog.Info("Waiting 100ms before restart", "process", p.config.Name)
+	p.logger.Info("Waiting 100ms before restart")
 	time.Sleep(100 * time.Millisecond) // Brief pause
-	slog.Info("Starting after restart", "process", p.config.Name)
+	p.logger.Info("Starting after restart")
 	return p.Start()
 }
 
@@ -284,7 +288,7 @@ func (p *Process) monitor() {
 		p.lastError = err
 
 		if p.GetState() != StateStopping {
-			slog.Info("Process exited", "process", p.config.Name, "exit_code", p.exitCode)
+			p.logger.Info("Process exited", "exit_code", p.exitCode)
 			p.setState(StateExited)
 
 			// Determine if we should restart
@@ -292,40 +296,40 @@ func (p *Process) monitor() {
 			switch p.config.Autorestart {
 			case config.RestartAlways:
 				shouldRestart = true
-				slog.Debug("Autorestart policy is 'always', will restart", "process", p.config.Name)
+				p.logger.Debug("Autorestart policy is 'always', will restart")
 			case config.RestartUnexpected:
 				// Restart if exit code is non-zero
 				if p.exitCode != 0 {
 					shouldRestart = true
-					slog.Debug("Autorestart policy is 'unexpected', exit code is non-zero, will restart", "process", p.config.Name, "exit_code", p.exitCode)
+					p.logger.Debug("Autorestart policy is 'unexpected', exit code is non-zero, will restart", "exit_code", p.exitCode)
 				} else {
-					slog.Debug("Autorestart policy is 'unexpected', exit code is zero, will not restart", "process", p.config.Name, "exit_code", p.exitCode)
+					p.logger.Debug("Autorestart policy is 'unexpected', exit code is zero, will not restart", "exit_code", p.exitCode)
 				}
 			case config.RestartNever:
 				shouldRestart = false
-				slog.Debug("Autorestart policy is 'never', will not restart", "process", p.config.Name)
+				p.logger.Debug("Autorestart policy is 'never', will not restart")
 			}
 
 			if shouldRestart {
 				p.restartCount++
-				slog.Info("Restart attempt", "process", p.config.Name, "attempt", p.restartCount, "max_retries", p.config.StartRetries)
+				p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_retries", p.config.StartRetries)
 				if p.restartCount <= p.config.StartRetries {
 					// Wait before restarting (exponential backoff)
 					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
-					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second)
-					slog.Info("Waiting before restart", "process", p.config.Name, "backoff", backoff)
+					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second) //nolint:gosec
+					p.logger.Info("Waiting before restart", "backoff", backoff)
 					time.Sleep(backoff)
 
 					if p.GetState() != StateStopping {
-						slog.Info("Attempting restart after backoff", "process", p.config.Name)
+						p.logger.Info("Attempting restart after backoff")
 						p.setState(StateBackoff)
 						if err := p.Start(); err != nil {
-							slog.Error("Restart failed", "process", p.config.Name, "error", err)
+							p.logger.Error("Restart failed", "error", err)
 							p.setState(StateFatal)
 						}
 					}
 				} else {
-					slog.Error("Exceeded maximum restart attempts, setting state to FATAL", "process", p.config.Name, "max_retries", p.config.StartRetries)
+					p.logger.Error("Exceeded maximum restart attempts, setting state to FATAL", "max_retries", p.config.StartRetries)
 					p.setState(StateFatal)
 				}
 			} else {
@@ -454,19 +458,19 @@ func (p *Process) monitorLogRotation() {
 				// Only check stdout rotator since both streams share the same file
 				if p.stdoutRotator != nil {
 					if err := p.stdoutRotator.CheckAndRotate(); err != nil {
-						// Log error but continue
+						p.logger.Error("Failed to rotate shared log", "error", err)
 					}
 				}
 			} else {
 				// Check both rotators separately
 				if p.stdoutRotator != nil {
 					if err := p.stdoutRotator.CheckAndRotate(); err != nil {
-						// Log error but continue
+						p.logger.Error("Failed to rotate stdout log", "error", err)
 					}
 				}
 				if p.stderrRotator != nil {
 					if err := p.stderrRotator.CheckAndRotate(); err != nil {
-						// Log error but continue
+						p.logger.Error("Failed to rotate stderr log", "error", err)
 					}
 				}
 			}

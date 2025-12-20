@@ -28,6 +28,8 @@ type ProcessStatusInfo struct {
 // supervisord manages all processes
 type Supervisord struct {
 	config          *config.Config
+	logger          *slog.Logger
+	processLogger   *slog.Logger
 	processes       map[string]*process.Process
 	processMutex    sync.RWMutex
 	dependencyGraph *dependency.Graph
@@ -37,7 +39,7 @@ type Supervisord struct {
 }
 
 // NewSupervisor creates a new supervisord instance
-func NewSupervisor(cfg *config.Config) (*Supervisord, error) {
+func NewSupervisor(cfg *config.Config, logger *slog.Logger) (*Supervisord, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -59,6 +61,8 @@ func NewSupervisor(cfg *config.Config) (*Supervisord, error) {
 
 	return &Supervisord{
 		config:          cfg,
+		logger:          logger.With("component", "main"),
+		processLogger:   logger,
 		processes:       make(map[string]*process.Process),
 		dependencyGraph: graph,
 		stopChan:        make(chan struct{}),
@@ -87,8 +91,8 @@ func (s *Supervisord) Start() error {
 	// Setup signal handling
 	s.setupSignalHandling()
 
-	slog.Info("IPC server started", "socket", s.config.Supervisord.Socket)
-	slog.Info("Starting processes...")
+	s.logger.Info("IPC server started", "socket", s.config.Supervisord.Socket)
+	s.logger.Info("Starting processes...")
 
 	// Start processes that should autostart
 	s.startAutostartProcesses()
@@ -96,7 +100,7 @@ func (s *Supervisord) Start() error {
 	// Monitor processes
 	go s.monitorProcesses()
 
-	slog.Info("Supervisord started successfully")
+	s.logger.Info("Supervisord started successfully")
 	return nil
 }
 
@@ -106,35 +110,35 @@ func (s *Supervisord) Stop() error {
 		return nil
 	}
 
-	slog.Info("Stopping supervisord...")
+	s.logger.Info("Stopping supervisord...")
 	s.running = false
 	close(s.stopChan)
 
 	// Stop all processes
 	s.processMutex.Lock()
 	processCount := len(s.processes)
-	slog.Info("Stopping processes", "count", processCount)
+	s.logger.Info("Stopping processes", "count", processCount)
 	for name, proc := range s.processes {
-		slog.Info("Stopping process", "process", name)
+		s.logger.Info("Stopping process", "process", name)
 		if err := proc.Stop(); err != nil {
 			// Log error but continue
-			slog.Error("Error stopping process", "process", name, "error", err)
+			s.logger.Error("Error stopping process", "process", name, "error", err)
 		} else {
-			slog.Info("Process stopped successfully", "process", name)
+			s.logger.Info("Process stopped successfully", "process", name)
 		}
 	}
 	s.processMutex.Unlock()
 
 	// Stop IPC server
 	if s.ipcServer != nil {
-		slog.Info("Stopping IPC server")
+		s.logger.Info("Stopping IPC server")
 		s.ipcServer.Stop()
 	}
 
 	// Remove PID file
 	s.removePIDFile()
 
-	slog.Info("Supervisord daemon stopped")
+	s.logger.Info("Supervisord daemon stopped")
 	return nil
 }
 
@@ -143,7 +147,7 @@ func (s *Supervisord) startAutostartProcesses() {
 	// Get topological sort order
 	order, err := s.dependencyGraph.TopologicalSort()
 	if err != nil {
-		slog.Warn("Failed to get startup order", "error", err)
+		s.logger.Warn("Failed to get startup order", "error", err)
 		// Start processes in config order
 		for name, progConfig := range s.config.Programs {
 			if progConfig.Autostart {
@@ -161,11 +165,11 @@ func (s *Supervisord) startAutostartProcesses() {
 		}
 
 		if progConfig.Autostart {
-			slog.Info("Starting process (autostart enabled)", "process", name)
+			s.logger.Info("Starting process (autostart enabled)", "process", name)
 			if err := s.StartProcess(name); err != nil {
-				slog.Error("Failed to start process", "process", name, "error", err)
+				s.logger.Error("Failed to start process", "process", name, "error", err)
 			} else {
-				slog.Info("Process started successfully", "process", name)
+				s.logger.Info("Process started successfully", "process", name)
 				// Give the process a moment to transition from STARTING to RUNNING
 				// This helps dependent processes that check immediately
 				time.Sleep(100 * time.Millisecond)
@@ -209,13 +213,13 @@ func (s *Supervisord) waitForSingleDependency(dep string) error {
 }
 
 // StartProcess starts a specific process
-func (s *Supervisord) StartProcess(name string) error {
+func (s *Supervisord) StartProcess(name string) error { //nolint:gocyclo
 	progConfig, exists := s.config.Programs[name]
 	if !exists {
 		return fmt.Errorf("process %s not found", name)
 	}
 
-	slog.Info("Starting process", "process", name)
+	s.logger.Info("Starting process", "process", name)
 
 	s.processMutex.Lock()
 	defer s.processMutex.Unlock()
@@ -225,24 +229,24 @@ func (s *Supervisord) StartProcess(name string) error {
 		// Process already exists, check if it's running
 		proc := s.processes[name]
 		if proc.GetState() == process.StateRunning {
-			slog.Info("Process is already running", "process", name)
+			s.logger.Info("Process is already running", "process", name)
 			return fmt.Errorf("process %s is already running", name)
 		}
 		// Stop existing process if needed
-		slog.Info("Stopping existing process before restart", "process", name)
+		s.logger.Info("Stopping existing process before restart", "process", name)
 		proc.Stop()
 	}
 
 	// Check dependencies and wait for them to be running if they're starting
 	deps := s.dependencyGraph.GetDependencies(name)
 	if len(deps) > 0 {
-		slog.Info("Process has dependencies", "process", name, "count", len(deps), "dependencies", deps)
+		s.logger.Info("Process has dependencies", "process", name, "count", len(deps), "dependencies", deps)
 	}
 	for _, dep := range deps {
 		depProc, exists := s.processes[dep]
 		if !exists {
 			// Dependency doesn't exist yet, wait for it to be created and running
-			slog.Info("Waiting for dependency to start", "process", name, "dependency", dep)
+			s.logger.Info("Waiting for dependency to start", "process", name, "dependency", dep)
 			// Release the lock while waiting to avoid deadlock
 			s.processMutex.Unlock()
 			if err := s.waitForSingleDependency(dep); err != nil {
@@ -255,12 +259,12 @@ func (s *Supervisord) StartProcess(name string) error {
 			if !exists || depProc.GetState() != process.StateRunning {
 				return fmt.Errorf("dependency %s is not running", dep)
 			}
-			slog.Info("Dependency is now running", "dependency", dep)
+			s.logger.Info("Dependency is now running", "dependency", dep)
 			continue
 		}
 		state := depProc.GetState()
 		if state == process.StateStarting {
-			slog.Info("Waiting for dependency to finish starting", "process", name, "dependency", dep)
+			s.logger.Info("Waiting for dependency to finish starting", "process", name, "dependency", dep)
 			// Dependency is starting, wait for it to become running
 			// Release the lock while waiting to avoid deadlock
 			s.processMutex.Unlock()
@@ -274,82 +278,82 @@ func (s *Supervisord) StartProcess(name string) error {
 			if !exists || depProc.GetState() != process.StateRunning {
 				return fmt.Errorf("dependency %s is not running", dep)
 			}
-			slog.Info("Dependency is now running", "process", name, "dependency", dep)
+			s.logger.Info("Dependency is now running", "process", name, "dependency", dep)
 		} else if state != process.StateRunning {
 			return fmt.Errorf("dependency %s is not running (state: %s)", dep, state)
 		}
 	}
 
 	// Create and start process
-	slog.Info("Creating process instance", "process", name)
-	proc := process.NewProcess(progConfig)
+	s.logger.Info("Creating process instance", "process", name)
+	proc := process.NewProcess(progConfig, s.processLogger)
 	proc.SetStateChangeCallback(s.onProcessStateChange)
 	proc.SetDependencyStopCallback(s.onDependencyStop)
 
-	slog.Info("Calling Start()", "process", name)
+	s.logger.Info("Calling Start()", "process", name)
 	if err := proc.Start(); err != nil {
-		slog.Error("Failed to start process", "process", name, "error", err)
+		s.logger.Error("Failed to start process", "process", name, "error", err)
 		return fmt.Errorf("failed to start process: %w", err)
 	}
 
 	s.processes[name] = proc
-	slog.Info("Process started", "process", name, "pid", proc.GetPID())
+	s.logger.Info("Process started", "process", name, "pid", proc.GetPID())
 	return nil
 }
 
 // StopProcess stops a specific process
 func (s *Supervisord) StopProcess(name string) error {
-	slog.Info("Stopping process", "process", name)
+	s.logger.Info("Stopping process", "process", name)
 
 	s.processMutex.Lock()
 	defer s.processMutex.Unlock()
 
 	proc, exists := s.processes[name]
 	if !exists {
-		slog.Warn("Process not found", "process", name)
+		s.logger.Warn("Process not found", "process", name)
 		return fmt.Errorf("process %s not found", name)
 	}
 
 	currentState := proc.GetState()
-	slog.Info("Current process state", "process", name, "state", currentState, "pid", proc.GetPID())
+	s.logger.Info("Current process state", "process", name, "state", currentState, "pid", proc.GetPID())
 
 	// Check if any processes depend on this one
 	dependents := s.dependencyGraph.GetDependents(name)
 	if len(dependents) > 0 {
-		slog.Info("Process has dependents", "process", name, "count", len(dependents), "dependents", dependents)
+		s.logger.Info("Process has dependents", "process", name, "count", len(dependents), "dependents", dependents)
 		for _, dep := range dependents {
 			depProc, exists := s.processes[dep]
 			if exists && depProc.GetState() == process.StateRunning {
 				// Stop dependent processes if configured
 				depConfig := s.config.Programs[dep]
 				if depConfig.StopOnDependencyFailure {
-					slog.Info("Stopping dependent process due to dependency failure", "process", name, "dependent", dep)
+					s.logger.Info("Stopping dependent process due to dependency failure", "process", name, "dependent", dep)
 					depProc.Stop()
 				}
 			}
 		}
 	}
 
-	slog.Info("Calling Stop()", "process", name)
+	s.logger.Info("Calling Stop()", "process", name)
 	if err := proc.Stop(); err != nil {
-		slog.Error("Error stopping process", "process", name, "error", err)
+		s.logger.Error("Error stopping process", "process", name, "error", err)
 		return err
 	}
 
-	slog.Info("Process stopped successfully", "process", name)
+	s.logger.Info("Process stopped successfully", "process", name)
 	return nil
 }
 
 // RestartProcess restarts a specific process
 func (s *Supervisord) RestartProcess(name string) error {
-	slog.Info("Restarting process", "process", name)
+	s.logger.Info("Restarting process", "process", name)
 	if err := s.StopProcess(name); err != nil {
-		slog.Error("Error stopping process during restart", "process", name, "error", err)
+		s.logger.Error("Error stopping process during restart", "process", name, "error", err)
 		return err
 	}
-	slog.Info("Waiting 100ms before restarting", "process", name)
+	s.logger.Info("Waiting 100ms before restarting", "process", name)
 	time.Sleep(100 * time.Millisecond)
-	slog.Info("Starting after restart", "process", name)
+	s.logger.Info("Starting after restart", "process", name)
 	return s.StartProcess(name)
 }
 
@@ -402,19 +406,23 @@ func (s *Supervisord) GetStatus() []ProcessStatusInfo {
 // onProcessStateChange is called when a process state changes
 func (s *Supervisord) onProcessStateChange(name string, oldState, newState process.State) {
 	if oldState != newState {
-		slog.Info("Process state changed", "process", name, "old_state", oldState, "new_state", newState)
+		s.logger.Info("Process state changed", "process", name, "old_state", oldState, "new_state", newState)
 	}
 
 	// Handle dependency failures
 	if newState == process.StateExited || newState == process.StateFatal {
-		slog.Info("Process exited or failed, checking dependents", "process", name)
+		if newState == process.StateExited {
+			s.logger.Info("Process exited, checking dependents", "process", name)
+		} else {
+			s.logger.Error("Process failed, checking dependents", "process", name)
+		}
 		dependents := s.dependencyGraph.GetDependents(name)
 		for _, dep := range dependents {
 			depProc, exists := s.processes[dep]
 			if exists {
 				depConfig := s.config.Programs[dep]
 				if depConfig.StopOnDependencyFailure {
-					slog.Info("Stopping dependent process due to dependency failure", "process", name, "dependent", dep)
+					s.logger.Info("Stopping dependent process due to dependency failure", "process", name, "dependent", dep)
 					depProc.Stop()
 				}
 			}

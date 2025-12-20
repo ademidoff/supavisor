@@ -2,6 +2,8 @@ package process
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,20 +17,21 @@ func TestSetupLogFiles_SharedStdoutStderr(t *testing.T) {
 	sharedLogPath := filepath.Join(tmpDir, "shared.log")
 
 	cfg := &config.ProgramConfig{
-		Name:            "test",
-		Command:         "/bin/echo test",
-		StdoutLogfile:   sharedLogPath,
-		StderrLogfile:   sharedLogPath, // Same path for both
+		Name:                  "test",
+		Command:               "/bin/echo test",
+		StdoutLogfile:         sharedLogPath,
+		StderrLogfile:         sharedLogPath, // Same path for both
 		StdoutLogfileMaxBytes: 10 * 1024 * 1024,
 		StderrLogfileMaxBytes: 20 * 1024 * 1024,
 		StdoutLogfileBackups:  5,
 		StderrLogfileBackups:  10,
 		StdoutLogfileMaxAge:   7,
 		StderrLogfileMaxAge:   14,
-		Environment:     make(map[string]string),
+		Environment:           make(map[string]string),
 	}
 
-	proc := NewProcess(cfg)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proc := NewProcess(cfg, logger)
 	err := proc.setupLogFiles()
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
@@ -75,18 +78,19 @@ func TestSetupLogFiles_SeparateStdoutStderr(t *testing.T) {
 	stderrPath := filepath.Join(tmpDir, "stderr.log")
 
 	cfg := &config.ProgramConfig{
-		Name:            "test",
-		Command:         "/bin/echo test",
-		StdoutLogfile:   stdoutPath,
-		StderrLogfile:   stderrPath, // Different paths
+		Name:                  "test",
+		Command:               "/bin/echo test",
+		StdoutLogfile:         stdoutPath,
+		StderrLogfile:         stderrPath, // Different paths
 		StdoutLogfileMaxBytes: 10 * 1024 * 1024,
 		StderrLogfileMaxBytes: 20 * 1024 * 1024,
 		StdoutLogfileBackups:  5,
 		StderrLogfileBackups:  10,
-		Environment:     make(map[string]string),
+		Environment:           make(map[string]string),
 	}
 
-	proc := NewProcess(cfg)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proc := NewProcess(cfg, logger)
 	err := proc.setupLogFiles()
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
@@ -125,16 +129,17 @@ func TestSetupLogFiles_OnlyStdout(t *testing.T) {
 	stdoutPath := filepath.Join(tmpDir, "stdout.log")
 
 	cfg := &config.ProgramConfig{
-		Name:            "test",
-		Command:         "/bin/echo test",
-		StdoutLogfile:   stdoutPath,
-		StderrLogfile:   "", // No stderr log file
+		Name:                  "test",
+		Command:               "/bin/echo test",
+		StdoutLogfile:         stdoutPath,
+		StderrLogfile:         "", // No stderr log file
 		StdoutLogfileMaxBytes: 10 * 1024 * 1024,
 		StdoutLogfileBackups:  5,
-		Environment:     make(map[string]string),
+		Environment:           make(map[string]string),
 	}
 
-	proc := NewProcess(cfg)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proc := NewProcess(cfg, logger)
 	err := proc.setupLogFiles()
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
@@ -170,14 +175,15 @@ func TestCloseLogFiles_SharedFile(t *testing.T) {
 	sharedLogPath := filepath.Join(tmpDir, "shared.log")
 
 	cfg := &config.ProgramConfig{
-		Name:            "test",
-		Command:         "/bin/echo test",
-		StdoutLogfile:   sharedLogPath,
-		StderrLogfile:   sharedLogPath,
-		Environment:     make(map[string]string),
+		Name:          "test",
+		Command:       "/bin/echo test",
+		StdoutLogfile: sharedLogPath,
+		StderrLogfile: sharedLogPath,
+		Environment:   make(map[string]string),
 	}
 
-	proc := NewProcess(cfg)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proc := NewProcess(cfg, logger)
 	err := proc.setupLogFiles()
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
@@ -219,14 +225,15 @@ func TestCloseLogFiles_SeparateFiles(t *testing.T) {
 	stderrPath := filepath.Join(tmpDir, "stderr.log")
 
 	cfg := &config.ProgramConfig{
-		Name:            "test",
-		Command:         "/bin/echo test",
-		StdoutLogfile:   stdoutPath,
-		StderrLogfile:   stderrPath,
-		Environment:     make(map[string]string),
+		Name:          "test",
+		Command:       "/bin/echo test",
+		StdoutLogfile: stdoutPath,
+		StderrLogfile: stderrPath,
+		Environment:   make(map[string]string),
 	}
 
-	proc := NewProcess(cfg)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proc := NewProcess(cfg, logger)
 	err := proc.setupLogFiles()
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
@@ -291,4 +298,3 @@ func TestExponentialBackoff(t *testing.T) {
 		})
 	}
 }
-

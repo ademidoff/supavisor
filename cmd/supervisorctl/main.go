@@ -50,7 +50,7 @@ func main() {
 }
 
 func printStatus(resp api.Response) {
-	data, ok := resp.Data.(map[string]interface{})
+	data, ok := resp.Data.(map[string]any)
 	if !ok {
 		fmt.Println(resp.Message)
 		return
@@ -85,7 +85,7 @@ func printStatus(resp api.Response) {
 	w.Flush()
 }
 
-func getString(m map[string]interface{}, key string) string {
+func getString(m map[string]any, key string) string {
 	val, ok := m[key]
 	if !ok {
 		return ""
@@ -97,7 +97,7 @@ func getString(m map[string]interface{}, key string) string {
 	return s
 }
 
-func getInt(m map[string]interface{}, key string) int {
+func getInt(m map[string]any, key string) int {
 	val, ok := m[key]
 	if !ok {
 		return 0
@@ -127,7 +127,7 @@ func sendRequest(socketPath, command string, args []string) (*api.Response, erro
 	}
 	conn, err := dialer.Dial("unix", socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("Error: failed to connect to supervisord: %v\nMake sure the supervisord daemon is running", err)
+		return nil, fmt.Errorf("failed to connect to supervisord: %w\nMake sure the supervisord daemon is running", err)
 	}
 	defer conn.Close()
 
@@ -135,7 +135,7 @@ func sendRequest(socketPath, command string, args []string) (*api.Response, erro
 	// Use a shorter timeout for faster failure when daemon is not responding
 	deadline := time.Now().Add(5 * time.Second)
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("Error: failed to set connection deadline: %v", err)
+		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
 	}
 
 	// Send request
@@ -146,14 +146,14 @@ func sendRequest(socketPath, command string, args []string) (*api.Response, erro
 
 	encoder := json.NewEncoder(conn)
 	if err := encoder.Encode(&req); err != nil {
-		return nil, fmt.Errorf("Error: failed to send request: %v", err)
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
 	// Receive response
 	decoder := json.NewDecoder(conn)
 	var resp api.Response
 	if err := decoder.Decode(&resp); err != nil {
-		return nil, fmt.Errorf("Error: failed to receive response: %v\nMake sure the supervisord daemon is running and responding", err)
+		return nil, fmt.Errorf("failed to receive response: %w\nMake sure the supervisord daemon is running and responding", err)
 	}
 
 	return &resp, nil
