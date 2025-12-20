@@ -45,7 +45,7 @@ type Process struct {
 	cancel      context.CancelFunc
 
 	// Callbacks
-	onStateChange    func(name string, oldState, newState State)
+	onStateChange    func(name string, prevState, newState State)
 	onDependencyStop func(name string)
 }
 
@@ -66,7 +66,7 @@ func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 }
 
 // SetStateChangeCallback sets a callback for state changes
-func (p *Process) SetStateChangeCallback(fn func(name string, oldState, newState State)) {
+func (p *Process) SetStateChangeCallback(fn func(name string, prevState, newState State)) {
 	p.onStateChange = fn
 }
 
@@ -85,12 +85,12 @@ func (p *Process) GetState() State {
 // setState sets the state and calls the callback
 func (p *Process) setState(newState State) {
 	p.stateMutex.Lock()
-	oldState := p.state
+	prevState := p.state
 	p.state = newState
 	p.stateMutex.Unlock()
 
-	if p.onStateChange != nil && oldState != newState {
-		p.onStateChange(p.config.Name, oldState, newState)
+	if p.onStateChange != nil && prevState != newState {
+		p.onStateChange(p.config.Name, prevState, newState)
 	}
 }
 

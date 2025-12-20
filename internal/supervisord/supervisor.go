@@ -404,9 +404,9 @@ func (s *Supervisord) GetStatus() []ProcessStatusInfo {
 }
 
 // onProcessStateChange is called when a process state changes
-func (s *Supervisord) onProcessStateChange(name string, oldState, newState process.State) {
-	if oldState != newState {
-		s.logger.Info("Process state changed", "process", name, "old_state", oldState, "new_state", newState)
+func (s *Supervisord) onProcessStateChange(name string, prevState, newState process.State) {
+	if prevState != newState {
+		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
 
 	// Handle dependency failures
