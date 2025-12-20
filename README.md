@@ -9,7 +9,14 @@ A process supervisor daemon written in Go, inspired by supervisord, that efficie
 - **Configuration-Based**: Configure process lifetime and behavior via INI-style config files
 - **Log Rotation**: Automatic log file rotation based on file size with configurable retention periods
 - **CLI Tool**: Command-line interface for managing processes
-- **Process States**: Track process states (STOPPED, STARTING, RUNNING, BACKOFF, STOPPING, EXITED, FATAL)
+- **Process States**: Track process states
+  - STOPPED
+  - STARTING
+  - RUNNING
+  - BACKOFF
+  - STOPPING
+  - EXITED
+  - FATAL
 - **Auto-restart Policies**: Configure restart behavior (always, never, unexpected)
 
 ## Installation

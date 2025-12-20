@@ -1,4 +1,4 @@
-.PHONY: build test clean run lint lint-install
+.PHONY: build test clean run lint lint-install format
 
 # Version of golangci-lint to use
 GOLANGCI_LINT_VERSION := v2.7.2
@@ -6,8 +6,10 @@ GOLANGCI_LINT_VERSION := v2.7.2
 # Path to golangci-lint binary
 GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
 
-# Build both supavisor and sctl binaries
+# Build the binaries
 build:
+  @echo "Formatting the code..."
+	@make format
 	@echo "Building supavisor..."
 	@go build -o bin/supavisor ./cmd/supavisor
 	@echo "Building sctl..."
@@ -39,6 +41,14 @@ lint: lint-install
 	fi; \
 	$(GOLANGCI_LINT) run --timeout=5m ./...
 	@echo "Linting complete!"
+
+# Format code with gofmt and goimports
+format:
+	@echo "Formatting code with go fmt..."
+	@go fmt ./...
+	@echo "Organizing imports with goimports..."
+	@go tool goimports -w .
+	@echo "Formatting complete!"
 
 # Clean build artifacts
 clean:
