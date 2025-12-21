@@ -69,7 +69,7 @@ func ParseConfigFile(path string) (*Config, error) {
 
 	// Parse [supavisor] section
 	if sec := cfg.Section("supavisor"); sec != nil {
-		config.Supavisor.LogFile = sec.Key("logfile").MustString("/var/log/supavisor/supavisor.log")
+		config.Supavisor.LogFile = sec.Key("logfile").String()
 		config.Supavisor.PidFile = sec.Key("pidfile").MustString("/var/run/supavisor.pid")
 		config.Supavisor.Socket = sec.Key("socket").MustString("/tmp/supavisor.sock")
 		config.Supavisor.LogFormat = sec.Key("log_format").MustString("text")

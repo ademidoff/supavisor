@@ -61,17 +61,20 @@ stdout_logfile_backups=10
 2. Start the supavisor daemon:
 
 ```bash
-# Run in foreground (for testing/debugging)
+# Run in foreground
 ./supavisor -c supavisor.conf
 
-# Run in background (daemon mode)
+# Run in background
 ./supavisor -c supavisor.conf &
 
 # Or use nohup for persistent background execution
 nohup ./supavisor -c supavisor.conf &
 ```
 
-**Note**: When a logfile is configured, all logs are written to the log file only (no console output). This prevents clutter when running in background mode.
+**Note**: 
+- When a logfile is configured, all logs are written to the log file only (no console output)
+- When no logfile is configured, logs are written to stdout (useful for container environments)
+- To run without a logfile, comment out or omit the `logfile` setting in the config
 
 3. Use the CLI tool to manage processes:
 
@@ -125,8 +128,9 @@ Commands:
 
 ### [supavisor] Section
 
-- `logfile`: Path to supavisor's own log file (default: `/var/log/supavisor/supavisor.log`)
+- `logfile`: Path to supavisor's own log file (optional)
   - When specified, all logs are written to this file only (no console output)
+  - When not specified, logs are written to stdout (if running in a terminal)
   - Can be overridden with the `-logfile` command-line flag
 - `pidfile`: Path to PID file (default: `/var/run/supavisor.pid`)
 - `socket`: Path to Unix domain socket for CLI communication (default: `/tmp/supavisor.sock`)
