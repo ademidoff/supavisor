@@ -11,6 +11,7 @@ import (
 
 	"github.com/ademidoff/supavisor/internal/config"
 	"github.com/ademidoff/supavisor/internal/supavisor"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -19,7 +20,7 @@ func main() {
 
 	flag.StringVar(&configPath, "c", "/etc/supavisor/supavisor.conf", "Path to configuration file")
 	flag.StringVar(&configPath, "config", "/etc/supavisor/supavisor.conf", "Path to configuration file")
-	flag.StringVar(&logFilePath, "logfile", "", "Optional path to log file (logs always go to stdout)")
+	flag.StringVar(&logFilePath, "logfile", "", "Optional path to log file (logs go to stdout only in interactive mode)")
 	flag.Parse()
 
 	if configPath == "" {
@@ -35,7 +36,18 @@ func main() {
 	}
 
 	// Setup logging
-	var output io.Writer = os.Stdout
+	// Detect if stdout is a TTY (interactive terminal)
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+
+	var output io.Writer
+
+	// Only write to stdout if we're in an interactive terminal
+	if isTTY {
+		output = os.Stdout
+	} else {
+		// In non-interactive mode (e.g., background process), use io.Discard
+		output = io.Discard
+	}
 
 	if logFilePath != "" {
 		// Ensure log directory exists
@@ -56,8 +68,12 @@ func main() {
 		// In a real daemon, we might want to handle rotation or closure on exit,
 		// but main() exit closes files anyway.
 
-		// Set log output to both stdout and the log file
-		output = io.MultiWriter(os.Stdout, logFile)
+		// Set log output to logFile, and also to stdout if interactive
+		if isTTY {
+			output = io.MultiWriter(os.Stdout, logFile)
+		} else {
+			output = logFile
+		}
 	}
 
 	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
