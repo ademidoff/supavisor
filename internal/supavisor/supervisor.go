@@ -75,6 +75,11 @@ func (s *Supavisor) Start() error {
 		return fmt.Errorf("supavisor is already running")
 	}
 
+	// Check if another instance is already running
+	if err := s.checkAlreadyRunning(); err != nil {
+		return err
+	}
+
 	s.running = true
 
 	// Start IPC server
@@ -462,6 +467,48 @@ func (s *Supavisor) setupSignalHandling() {
 	}()
 }
 
+// checkAlreadyRunning checks if another instance is already running
+func (s *Supavisor) checkAlreadyRunning() error {
+	// Check if PID file exists and process is running
+	if s.config.Supavisor.PidFile != "" {
+		if data, err := os.ReadFile(s.config.Supavisor.PidFile); err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
+				// Check if process is still running
+				if process, err := os.FindProcess(pid); err == nil {
+					// Send signal 0 to check if process exists
+					if err := process.Signal(syscall.Signal(0)); err == nil {
+						return fmt.Errorf("supavisor is already running (PID: %d)", pid)
+					}
+				}
+			}
+			// PID file exists but process is not running - this is a stale file
+			return fmt.Errorf("found stale PID file: %s\nThe previous instance may have crashed. Please remove it manually and check logs:\n  rm %s",
+				s.config.Supavisor.PidFile, s.config.Supavisor.PidFile)
+		}
+	}
+
+	// Check if socket is in use
+	if s.config.Supavisor.Socket != "" {
+		if _, err := os.Stat(s.config.Supavisor.Socket); err == nil {
+			// Try to connect to see if it's actually in use
+			conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+			if err == nil {
+				defer syscall.Close(conn)
+				addr := &syscall.SockaddrUnix{Name: s.config.Supavisor.Socket}
+				if err := syscall.Connect(conn, addr); err == nil {
+					return fmt.Errorf("supavisor socket is already in use: %s", s.config.Supavisor.Socket)
+				}
+			}
+			// Socket file exists but not in use - this is a stale file
+			return fmt.Errorf("found stale socket file: %s\nThe previous instance may have crashed. Please remove it manually and check logs:\n  rm %s",
+				s.config.Supavisor.Socket, s.config.Supavisor.Socket)
+		}
+	}
+
+	return nil
+}
+
 // writePIDFile writes the PID file
 func (s *Supavisor) writePIDFile() error {
 	if s.config.Supavisor.PidFile == "" {
@@ -469,7 +516,7 @@ func (s *Supavisor) writePIDFile() error {
 	}
 
 	pid := os.Getpid()
-	return os.WriteFile(s.config.Supavisor.PidFile, []byte(fmt.Sprintf("%d\n", pid)), 0644)
+	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0644)
 }
 
 // removePIDFile removes the PID file

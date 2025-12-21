@@ -75,6 +75,11 @@ nohup ./supavisor -c supavisor.conf &
 - When a logfile is configured, all logs are written to the log file only (no console output)
 - When no logfile is configured, logs are written to stdout (useful for container environments)
 - To run without a logfile, comment out or omit the `logfile` setting in the config
+- Supavisor prevents multiple instances from running simultaneously by checking PID and socket files
+- If you find stale PID or socket files after a crash, remove them manually before starting:
+  ```bash
+  rm /tmp/supavisor.pid /tmp/supavisor.sock
+  ```
 
 3. Use the CLI tool to manage processes:
 
