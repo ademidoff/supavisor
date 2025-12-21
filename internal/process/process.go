@@ -238,7 +238,7 @@ func (p *Process) Stop() error {
 		select {
 		case <-p.monitorDone:
 			// Process exited gracefully, monitor has finished
-			p.logger.Info("Exited gracefully")
+			p.logger.Info("Process exited gracefully")
 		case <-time.After(5 * time.Second):
 			// Force kill
 			p.logger.Info("Graceful shutdown timeout, sending SIGKILL")
@@ -255,10 +255,10 @@ func (p *Process) Stop() error {
 	p.cancel()
 
 	// Close log files
-	p.logger.Info("Closing log files")
+	p.logger.Info("Closing process log files")
 	p.closeLogFiles()
 
-	p.logger.Info("Stopped successfully")
+	p.logger.Info("Process stopped successfully")
 	return nil
 }
 
@@ -270,7 +270,7 @@ func (p *Process) Restart() error {
 		return err
 	}
 	p.logger.Info("Waiting 100ms before restart")
-	time.Sleep(100 * time.Millisecond) // Brief pause
+	time.Sleep(100 * time.Millisecond)
 	p.logger.Info("Starting after restart")
 	return p.Start()
 }

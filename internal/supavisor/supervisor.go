@@ -118,14 +118,8 @@ func (s *Supavisor) Stop() error {
 	s.processMutex.Lock()
 	processCount := len(s.processes)
 	s.logger.Info("Stopping processes", "count", processCount)
-	for name, proc := range s.processes {
-		s.logger.Info("Stopping process", "process", name)
-		if err := proc.Stop(); err != nil {
-			// Log error but continue
-			s.logger.Error("Error stopping process", "process", name, "error", err)
-		} else {
-			s.logger.Info("Process stopped successfully", "process", name)
-		}
+	for _, proc := range s.processes {
+		_ = proc.Stop()
 	}
 	s.processMutex.Unlock()
 
@@ -456,7 +450,8 @@ func (s *Supavisor) setupSignalHandling() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		<-sigChan
+		sig := <-sigChan
+		s.logger.Info("Received signal to stop supavisor", "signal", sig.String())
 		s.Stop()
 		os.Exit(0)
 	}()
