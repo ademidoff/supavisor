@@ -44,6 +44,11 @@ type Process struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 
+	// Synchronization for stop
+	monitorDone       chan struct{}
+	stoppedExternally bool
+	stopMutex         sync.Mutex
+
 	// Callbacks
 	onStateChange    func(name string, prevState, newState State)
 	onDependencyStop func(name string)
@@ -62,6 +67,7 @@ func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 		restartChan: make(chan struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
+		monitorDone: make(chan struct{}),
 	}
 }
 
@@ -175,6 +181,12 @@ func (p *Process) Start() error {
 	p.lastError = nil
 	p.logger.Info("Started process", "pid", p.pid)
 
+	// Reset monitor synchronization
+	p.monitorDone = make(chan struct{})
+	p.stopMutex.Lock()
+	p.stoppedExternally = false
+	p.stopMutex.Unlock()
+
 	// Monitor the process
 	go p.monitor()
 
@@ -207,35 +219,40 @@ func (p *Process) Stop() error {
 	}
 
 	p.logger.Info("Stopping process", "pid", p.pid)
+
+	// Mark that this stop was initiated externally (by supervisor or user command)
+	p.stopMutex.Lock()
+	p.stoppedExternally = true
+	p.stopMutex.Unlock()
+
 	p.setState(StateStopping)
 
 	if p.cmd != nil && p.cmd.Process != nil {
 		// Try graceful shutdown first
 		p.logger.Info("Sending SIGINT for graceful shutdown")
-		p.cmd.Process.Signal(os.Interrupt)
+		if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
+			p.logger.Warn("Failed to send SIGINT", "error", err)
+		}
 
-		// Wait a bit for graceful shutdown
-		done := make(chan error, 1)
-		go func() {
-			done <- p.cmd.Wait()
-		}()
-
+		// Wait for graceful shutdown with timeout
 		select {
-		case <-done:
-			// Process exited gracefully
+		case <-p.monitorDone:
+			// Process exited gracefully, monitor has finished
 			p.logger.Info("Exited gracefully")
 		case <-time.After(5 * time.Second):
 			// Force kill
 			p.logger.Info("Graceful shutdown timeout, sending SIGKILL")
-			p.cmd.Process.Kill()
-			<-done
+			if err := p.cmd.Process.Kill(); err != nil {
+				p.logger.Warn("Failed to send SIGKILL", "error", err)
+			}
+			// Wait for monitor to finish after kill
+			<-p.monitorDone
 			p.logger.Info("Force killed")
 		}
 	}
 
+	// Cancel context to clean up any remaining goroutines
 	p.cancel()
-	p.stopTime = time.Now()
-	p.setState(StateStopped)
 
 	// Close log files
 	p.logger.Info("Closing log files")
@@ -260,6 +277,8 @@ func (p *Process) Restart() error {
 
 // monitor monitors the process and handles restarts
 func (p *Process) monitor() {
+	defer close(p.monitorDone)
+
 	done := make(chan error, 1)
 	go func() {
 		done <- p.cmd.Wait()
@@ -287,7 +306,26 @@ func (p *Process) monitor() {
 		p.stopTime = time.Now()
 		p.lastError = err
 
-		if p.GetState() != StateStopping {
+		currentState := p.GetState()
+
+		// Check if stop was initiated externally (by supervisor or user command)
+		p.stopMutex.Lock()
+		stoppedExternally := p.stoppedExternally
+		p.stopMutex.Unlock()
+
+		if currentState == StateStopping {
+			// Process was being stopped
+			if stoppedExternally {
+				// Stopped externally by supervisor or user command
+				p.logger.Info("Process stopped externally", "exit_code", p.exitCode)
+				p.setState(StateStopped)
+			} else {
+				// Process exited on its own while we were trying to stop it
+				p.logger.Info("Process exited during stop", "exit_code", p.exitCode)
+				p.setState(StateExited)
+			}
+		} else {
+			// Process exited on its own
 			p.logger.Info("Process exited", "exit_code", p.exitCode)
 			p.setState(StateExited)
 
@@ -338,7 +376,9 @@ func (p *Process) monitor() {
 		}
 
 	case <-p.ctx.Done():
-		// Process was stopped
+		// Context was cancelled, process might still be running
+		// This shouldn't normally happen as Stop() waits for monitor to complete
+		p.logger.Info("Monitor context cancelled")
 		return
 	}
 }
