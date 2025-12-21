@@ -61,8 +61,17 @@ stdout_logfile_backups=10
 2. Start the supavisor daemon:
 
 ```bash
+# Run in foreground (for testing/debugging)
 ./supavisor -c supavisor.conf
+
+# Run in background (daemon mode)
+./supavisor -c supavisor.conf &
+
+# Or use nohup for persistent background execution
+nohup ./supavisor -c supavisor.conf &
 ```
+
+**Note**: When a logfile is configured, all logs are written to the log file only (no console output). This prevents clutter when running in background mode.
 
 3. Use the CLI tool to manage processes:
 
@@ -86,13 +95,42 @@ stdout_logfile_backups=10
 ./sctl shutdown
 ```
 
+## Command-Line Options
+
+### supavisor
+
+```bash
+./supavisor [options]
+```
+
+Options:
+- `-c, -config <path>`: Path to configuration file (default: `/etc/supavisor/supavisor.conf`)
+- `-logfile <path>`: Override log file path from config (optional)
+
+### sctl
+
+```bash
+./sctl <command> [process-name]
+```
+
+Commands:
+- `status`: Show status of all processes
+- `start <name>`: Start a specific process
+- `stop <name>`: Stop a specific process
+- `restart <name>`: Restart a specific process
+- `reload`: Reload configuration
+- `shutdown`: Shutdown supavisor daemon
+
 ## Configuration
 
 ### [supavisor] Section
 
-- `logfile`: Path to supavisor's own log file
-- `pidfile`: Path to PID file
-- `socket`: Path to Unix domain socket for CLI communication
+- `logfile`: Path to supavisor's own log file (default: `/var/log/supavisor/supavisor.log`)
+  - When specified, all logs are written to this file only (no console output)
+  - Can be overridden with the `-logfile` command-line flag
+- `pidfile`: Path to PID file (default: `/var/run/supavisor.pid`)
+- `socket`: Path to Unix domain socket for CLI communication (default: `/tmp/supavisor.sock`)
+- `log_format`: Log format - `text` (default) or `json`
 
 ### [program:name] Section
 
@@ -120,12 +158,12 @@ Each program section defines a process to manage:
 
 ## Process States
 
-- `STOPPED`: Process is stopped
+- `STOPPED`: Process was stopped by supavisor (e.g., via `sctl stop` or dependency failure)
 - `STARTING`: Process is starting up
-- `RUNNING`: Process is running
+- `RUNNING`: Process is running normally
 - `BACKOFF`: Process failed to start, waiting before retry
-- `STOPPING`: Process is being stopped
-- `EXITED`: Process exited
+- `STOPPING`: Process is being stopped (transitional state)
+- `EXITED`: Process exited on its own (completed normally or crashed)
 - `FATAL`: Process failed to start after all retries
 
 ## Dependency Management

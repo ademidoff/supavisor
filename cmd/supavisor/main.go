@@ -35,20 +35,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Use logfile from config if not specified via flag
+	if logFilePath == "" && cfg.Supavisor.LogFile != "" {
+		logFilePath = cfg.Supavisor.LogFile
+	}
+
 	// Setup logging
 	// Detect if stdout is a TTY (interactive terminal)
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 
 	var output io.Writer
 
-	// Only write to stdout if we're in an interactive terminal
-	if isTTY {
-		output = os.Stdout
-	} else {
-		// In non-interactive mode (e.g., background process), use io.Discard
-		output = io.Discard
-	}
-
+	// If a log file is specified, always use it (and only it)
+	// This is standard daemon behavior - logs go to the file, not stdout
 	if logFilePath != "" {
 		// Ensure log directory exists
 		if dir := filepath.Dir(logFilePath); dir != "" && dir != "." {
@@ -68,12 +67,14 @@ func main() {
 		// In a real daemon, we might want to handle rotation or closure on exit,
 		// but main() exit closes files anyway.
 
-		// Set log output to logFile, and also to stdout if interactive
-		if isTTY {
-			output = io.MultiWriter(os.Stdout, logFile)
-		} else {
-			output = logFile
-		}
+		// Write logs only to the file (standard daemon behavior)
+		output = logFile
+	} else if isTTY {
+		// No logfile specified, use stdout only in interactive mode
+		output = os.Stdout
+	} else {
+		// No logfile and non-interactive mode, discard logs
+		output = io.Discard
 	}
 
 	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {

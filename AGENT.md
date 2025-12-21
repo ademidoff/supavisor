@@ -48,3 +48,8 @@ supavisor manages processes using the following pattern:
 ## RESTful conventions
 - Use RESTful conventions (GET/POST/PUT/DELETE with resource paths)
 - Use custom endpoints only when necessary (e.g., actions)
+
+## Documentation
+- Always document major behavior in README.md
+- Have all configuration parameters properly documented
+- Document the edge cases and special behavior
