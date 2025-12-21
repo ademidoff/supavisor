@@ -324,6 +324,10 @@ func (p *Process) monitor() {
 				p.logger.Info("Process exited during stop", "exit_code", p.exitCode)
 				p.setState(StateExited)
 			}
+		} else if stoppedExternally {
+			// Process was stopped externally but exited before we could send the signal
+			p.logger.Info("Process stopped externally", "exit_code", p.exitCode)
+			p.setState(StateStopped)
 		} else {
 			// Process exited on its own
 			p.logger.Info("Process exited", "exit_code", p.exitCode)

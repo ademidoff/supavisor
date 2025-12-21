@@ -403,6 +403,11 @@ func (s *Supavisor) onProcessStateChange(name string, prevState, newState proces
 		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
 
+	// Don't handle dependency failures during shutdown
+	if !s.running {
+		return
+	}
+
 	// Handle dependency failures
 	if newState == process.StateExited || newState == process.StateFatal {
 		if newState == process.StateExited {
