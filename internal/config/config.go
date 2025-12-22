@@ -119,8 +119,8 @@ func parseProgramSection(section *ini.Section, name string) (*ProgramConfig, err
 	// Parse dependencies
 	dependsOn := section.Key("depends_on").String()
 	if dependsOn != "" {
-		deps := strings.Split(dependsOn, ",")
-		for _, dep := range deps {
+		deps := strings.SplitSeq(dependsOn, ",")
+		for dep := range deps {
 			dep = strings.TrimSpace(dep)
 			if dep != "" {
 				prog.DependsOn = append(prog.DependsOn, dep)

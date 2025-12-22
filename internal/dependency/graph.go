@@ -85,11 +85,9 @@ func (g *Graph) AddNode(name string, dependencies []string) {
 func (g *Graph) TopologicalSort() ([]string, error) {
 	// Calculate in-degrees
 	inDegree := make(map[string]int)
-	for name := range g.nodes {
-		inDegree[name] = 0
-	}
 
 	for name, node := range g.nodes {
+		inDegree[name] = 0
 		for _, dep := range node.Dependencies {
 			if _, exists := g.nodes[dep]; exists {
 				inDegree[name]++

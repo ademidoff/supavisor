@@ -76,7 +76,7 @@ func (s *Supavisor) Start() error {
 	}
 
 	// Check if another instance is already running
-	if err := s.checkAlreadyRunning(); err != nil {
+	if err := s.checkIfRunning(); err != nil {
 		return err
 	}
 
@@ -467,8 +467,8 @@ func (s *Supavisor) setupSignalHandling() {
 	}()
 }
 
-// checkAlreadyRunning checks if another instance is already running
-func (s *Supavisor) checkAlreadyRunning() error {
+// checkIfRunning checks if another instance is already running
+func (s *Supavisor) checkIfRunning() error {
 	// Check if PID file exists and process is running
 	if s.config.Supavisor.PidFile != "" {
 		if data, err := os.ReadFile(s.config.Supavisor.PidFile); err == nil {
@@ -483,8 +483,8 @@ func (s *Supavisor) checkAlreadyRunning() error {
 				}
 			}
 			// PID file exists but process is not running - this is a stale file
-			return fmt.Errorf("found stale PID file: %s\nThe previous instance may have crashed. Please remove it manually and check logs:\n  rm %s",
-				s.config.Supavisor.PidFile, s.config.Supavisor.PidFile)
+			return fmt.Errorf("found stale PID file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs.",
+				s.config.Supavisor.PidFile)
 		}
 	}
 
@@ -501,8 +501,8 @@ func (s *Supavisor) checkAlreadyRunning() error {
 				}
 			}
 			// Socket file exists but not in use - this is a stale file
-			return fmt.Errorf("found stale socket file: %s\nThe previous instance may have crashed. Please remove it manually and check logs:\n  rm %s",
-				s.config.Supavisor.Socket, s.config.Supavisor.Socket)
+			return fmt.Errorf("found stale socket file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs.",
+				s.config.Supavisor.Socket)
 		}
 	}
 
