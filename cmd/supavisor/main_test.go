@@ -300,3 +300,172 @@ func TestMultiWriterBehavior(t *testing.T) {
 		t.Errorf("Second writer: expected %q but got %q", testData, buf2.String())
 	}
 }
+
+// TestParseLogLevel tests the parseLogLevel function
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		expected  slog.Level
+		expectErr bool
+	}{
+		{
+			name:      "debug level",
+			input:     "debug",
+			expected:  slog.LevelDebug,
+			expectErr: false,
+		},
+		{
+			name:      "DEBUG level uppercase",
+			input:     "DEBUG",
+			expected:  slog.LevelDebug,
+			expectErr: false,
+		},
+		{
+			name:      "info level",
+			input:     "info",
+			expected:  slog.LevelInfo,
+			expectErr: false,
+		},
+		{
+			name:      "INFO level uppercase",
+			input:     "INFO",
+			expected:  slog.LevelInfo,
+			expectErr: false,
+		},
+		{
+			name:      "warn level",
+			input:     "warn",
+			expected:  slog.LevelWarn,
+			expectErr: false,
+		},
+		{
+			name:      "WARN level uppercase",
+			input:     "WARN",
+			expected:  slog.LevelWarn,
+			expectErr: false,
+		},
+		{
+			name:      "error level",
+			input:     "error",
+			expected:  slog.LevelError,
+			expectErr: false,
+		},
+		{
+			name:      "ERROR level uppercase",
+			input:     "ERROR",
+			expected:  slog.LevelError,
+			expectErr: false,
+		},
+		{
+			name:      "invalid level returns error",
+			input:     "invalid",
+			expected:  slog.LevelInfo,
+			expectErr: true,
+		},
+		{
+			name:      "empty string returns error",
+			input:     "",
+			expected:  slog.LevelInfo,
+			expectErr: true,
+		},
+		{
+			name:      "whitespace trimmed",
+			input:     "  debug  ",
+			expected:  slog.LevelDebug,
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseLogLevel(tt.input)
+			if (err != nil) != tt.expectErr {
+				t.Errorf("parseLogLevel(%q) error = %v, expectErr %v", tt.input, err, tt.expectErr)
+				return
+			}
+			if !tt.expectErr && result != tt.expected {
+				t.Errorf("parseLogLevel(%q) = %v, expected %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestLogLevelIntegration tests that log level configuration affects actual logging
+func TestLogLevelIntegration(t *testing.T) {
+	tests := []struct {
+		name          string
+		logLevel      slog.Level
+		logFunc       func(*slog.Logger)
+		shouldAppear  bool
+		expectedInLog string
+	}{
+		{
+			name:     "debug message with debug level",
+			logLevel: slog.LevelDebug,
+			logFunc: func(l *slog.Logger) {
+				l.Debug("debug message")
+			},
+			shouldAppear:  true,
+			expectedInLog: "debug message",
+		},
+		{
+			name:     "debug message with info level",
+			logLevel: slog.LevelInfo,
+			logFunc: func(l *slog.Logger) {
+				l.Debug("debug message")
+			},
+			shouldAppear:  false,
+			expectedInLog: "debug message",
+		},
+		{
+			name:     "info message with info level",
+			logLevel: slog.LevelInfo,
+			logFunc: func(l *slog.Logger) {
+				l.Info("info message")
+			},
+			shouldAppear:  true,
+			expectedInLog: "info message",
+		},
+		{
+			name:     "info message with error level",
+			logLevel: slog.LevelError,
+			logFunc: func(l *slog.Logger) {
+				l.Info("info message")
+			},
+			shouldAppear:  false,
+			expectedInLog: "info message",
+		},
+		{
+			name:     "error message with info level",
+			logLevel: slog.LevelInfo,
+			logFunc: func(l *slog.Logger) {
+				l.Error("error message")
+			},
+			shouldAppear:  true,
+			expectedInLog: "error message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{
+				Level: tt.logLevel,
+			})
+			logger := slog.New(handler)
+
+			tt.logFunc(logger)
+
+			output := buf.String()
+			contains := strings.Contains(output, tt.expectedInLog)
+
+			if tt.shouldAppear && !contains {
+				t.Errorf("Expected log to contain %q but it didn't. Output: %s", tt.expectedInLog, output)
+			}
+			if !tt.shouldAppear && contains {
+				t.Errorf("Expected log to NOT contain %q but it did. Output: %s", tt.expectedInLog, output)
+			}
+		})
+	}
+}

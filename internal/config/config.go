@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ type SupavisorConfig struct {
 	PidFile   string
 	Socket    string
 	LogFormat string
+	LogLevel  string
 }
 
 // ProgramConfig represents configuration for a single program
@@ -73,6 +75,7 @@ func ParseConfigFile(path string) (*Config, error) {
 		config.Supavisor.PidFile = sec.Key("pidfile").MustString("/var/run/supavisor.pid")
 		config.Supavisor.Socket = sec.Key("socket").MustString("/tmp/supavisor.sock")
 		config.Supavisor.LogFormat = sec.Key("log_format").MustString("text")
+		config.Supavisor.LogLevel = sec.Key("log_level").MustString("info")
 	}
 
 	// Parse [program:*] sections
@@ -148,9 +151,7 @@ func parseProgramSection(section *ini.Section, name string) (*ProgramConfig, err
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 		}
-		for k, v := range envVars {
-			prog.Environment[k] = v
-		}
+		maps.Copy(prog.Environment, envVars)
 	}
 
 	prog.User = section.Key("user").MustString("")
@@ -169,16 +170,17 @@ func parseBytes(s string) int64 {
 	s = strings.ToUpper(s)
 	var multiplier int64 = 1
 
-	if strings.HasSuffix(s, "KB") {
+	switch {
+	case strings.HasSuffix(s, "KB"):
 		multiplier = 1024
 		s = strings.TrimSuffix(s, "KB")
-	} else if strings.HasSuffix(s, "MB") {
+	case strings.HasSuffix(s, "MB"):
 		multiplier = 1024 * 1024
 		s = strings.TrimSuffix(s, "MB")
-	} else if strings.HasSuffix(s, "GB") {
+	case strings.HasSuffix(s, "GB"):
 		multiplier = 1024 * 1024 * 1024
 		s = strings.TrimSuffix(s, "GB")
-	} else if strings.HasSuffix(s, "B") {
+	case strings.HasSuffix(s, "B"):
 		multiplier = 1
 		s = strings.TrimSuffix(s, "B")
 	}

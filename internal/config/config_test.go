@@ -104,6 +104,86 @@ command=/usr/bin/testapp
 	}
 }
 
+func TestParseConfigFile_LogLevel(t *testing.T) {
+	tests := []struct {
+		name          string
+		configContent string
+		expectedLevel string
+	}{
+		{
+			name: "explicit debug level",
+			configContent: `[supavisor]
+log_level=debug
+
+[program:testapp]
+command=/usr/bin/testapp
+`,
+			expectedLevel: "debug",
+		},
+		{
+			name: "explicit info level",
+			configContent: `[supavisor]
+log_level=info
+
+[program:testapp]
+command=/usr/bin/testapp
+`,
+			expectedLevel: "info",
+		},
+		{
+			name: "explicit warn level",
+			configContent: `[supavisor]
+log_level=warn
+
+[program:testapp]
+command=/usr/bin/testapp
+`,
+			expectedLevel: "warn",
+		},
+		{
+			name: "explicit error level",
+			configContent: `[supavisor]
+log_level=error
+
+[program:testapp]
+command=/usr/bin/testapp
+`,
+			expectedLevel: "error",
+		},
+		{
+			name: "default log level when not specified",
+			configContent: `[supavisor]
+logfile=/var/log/supavisor/supavisor.log
+
+[program:testapp]
+command=/usr/bin/testapp
+`,
+			expectedLevel: "info",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "test.conf")
+
+			err := os.WriteFile(configPath, []byte(tt.configContent), 0644)
+			if err != nil {
+				t.Fatalf("Failed to create test config file: %v", err)
+			}
+
+			cfg, err := ParseConfigFile(configPath)
+			if err != nil {
+				t.Fatalf("Failed to parse config file: %v", err)
+			}
+
+			if cfg.Supavisor.LogLevel != tt.expectedLevel {
+				t.Errorf("Expected log_level %s, got %s", tt.expectedLevel, cfg.Supavisor.LogLevel)
+			}
+		})
+	}
+}
+
 func TestParseEnvironmentVariables(t *testing.T) {
 	tests := []struct {
 		name     string

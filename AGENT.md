@@ -26,6 +26,7 @@ supavisor manages processes using the following pattern:
 - Prefer modern Go idioms (context, error wrapping)
 - Prefer modern slice helpers (e.g., `slices.Contains`), range loops
 - Use `any` instead of `interface{}`
+- Prefer tagless `switch` statements over `if` statements
 - Always use `make` to create arrays and maps
 
 ### Don't
@@ -34,6 +35,7 @@ supavisor manages processes using the following pattern:
 - Don't commit test binaries or test artifacts (add to `.gitignore` if needed)
 - Don't comment on every single line of code unnecessarily, only where clarity is needed
 - Don't inline comments (i.e. `code // comment`), always put comments on separate lines
+- Never use `%q` in string formatting, use `%s` instead
 
 ### Error Handling
 - Wrap errors with context: `fmt.Errorf("descriptive context: %w", err)`

@@ -14,6 +14,22 @@ import (
 	"golang.org/x/term"
 )
 
+// parseLogLevel converts a string log level to slog.Level
+func parseLogLevel(level string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("invalid log level %s: must be debug, info, warn, or error", level)
+	}
+}
+
 func main() {
 	var configPath string
 	var logFilePath string
@@ -85,9 +101,16 @@ func main() {
 		return a
 	}
 
+	// Parse log level
+	logLevel, err := parseLogLevel(cfg.Supavisor.LogLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	var handler slog.Handler
 	opts := &slog.HandlerOptions{
-		Level:       slog.LevelInfo,
+		Level:       logLevel,
 		ReplaceAttr: replaceAttr,
 	}
 
