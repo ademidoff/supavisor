@@ -353,9 +353,9 @@ func (p *Process) monitor() {
 			}
 
 			if shouldRestart {
-				p.restartCount++
-				p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_retries", p.config.StartRetries)
-				if p.restartCount <= p.config.StartRetries {
+				if p.restartCount < p.config.StartRetries {
+					p.restartCount++
+					p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_retries", p.config.StartRetries)
 					// Wait before restarting (exponential backoff)
 					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
 					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second) //nolint:gosec

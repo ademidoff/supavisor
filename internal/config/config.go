@@ -30,25 +30,25 @@ type SupavisorConfig struct {
 
 // ProgramConfig represents configuration for a single program
 type ProgramConfig struct {
-	Name                    string
-	Command                 string
-	Directory               string
-	Autostart               bool
-	Autorestart             RestartPolicy
-	StartSecs               int
-	StartRetries            int
-	DependsOn               []string
-	StdoutLogfile           string
-	StderrLogfile           string
-	StdoutLogfileMaxBytes   int64
-	StdoutLogfileBackups    int
-	StdoutLogfileMaxAge     int // days
-	StderrLogfileMaxBytes   int64
-	StderrLogfileBackups    int
-	StderrLogfileMaxAge     int // days
-	Environment             map[string]string
-	User                    string
-	Priority                int
+	Name                  string
+	Command               string
+	Directory             string
+	Autostart             bool
+	Autorestart           RestartPolicy
+	StartSecs             int
+	StartRetries          int
+	DependsOn             []string
+	StdoutLogfile         string
+	StderrLogfile         string
+	StdoutLogfileMaxBytes int64
+	StdoutLogfileBackups  int
+	StdoutLogfileMaxAge   int // days
+	StderrLogfileMaxBytes int64
+	StderrLogfileBackups  int
+	StderrLogfileMaxAge   int // days
+	Environment           map[string]string
+	User                  string
+	Priority              int
 }
 
 // Config represents the complete configuration

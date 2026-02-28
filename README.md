@@ -1,6 +1,6 @@
 # Supavisor
 
-A process supervisor daemon written in Go, inspired by supervisord, that efficiently manages child processes with dependency support, config-based lifecycle management, and log rotation.
+A process supervisor daemon written in Go, that is largely inspired by supervisord. It efficiently manages child processes with dependency support, config-based lifecycle management, and log rotation.
 
 ## Features
 

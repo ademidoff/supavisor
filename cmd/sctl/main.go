@@ -16,6 +16,7 @@ func main() {
 	var socketPath string
 	flag.StringVar(&socketPath, "s", "/tmp/supavisor.sock", "Path to supavisor socket")
 	flag.StringVar(&socketPath, "socket", "/tmp/supavisor.sock", "Path to supavisor socket")
+	flag.Usage = printUsage
 	flag.Parse()
 
 	if len(os.Args) < 2 {
@@ -28,7 +29,7 @@ func main() {
 
 	resp, err := sendRequest(socketPath, command, args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(os.Stderr, "Fatal: %v\n", err)
 		os.Exit(1)
 	}
 

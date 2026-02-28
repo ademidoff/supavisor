@@ -230,7 +230,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/ademidoff/go-supervisord
+        - github.com/ademidoff/supavisor
   exclusions:
     generated: lax
     paths:
