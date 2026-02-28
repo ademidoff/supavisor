@@ -1,6 +1,6 @@
 module github.com/ademidoff/supavisor
 
-go 1.25.5
+go 1.25.7
 
 tool golang.org/x/tools/cmd/goimports
 
