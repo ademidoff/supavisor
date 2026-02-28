@@ -38,7 +38,6 @@ type ProgramConfig struct {
 	StartSecs               int
 	StartRetries            int
 	DependsOn               []string
-	StopOnDependencyFailure bool
 	StdoutLogfile           string
 	StderrLogfile           string
 	StdoutLogfileMaxBytes   int64
@@ -117,7 +116,6 @@ func parseProgramSection(section *ini.Section, name string) (*ProgramConfig, err
 
 	prog.StartSecs = section.Key("startsecs").MustInt(1)
 	prog.StartRetries = section.Key("startretries").MustInt(3)
-	prog.StopOnDependencyFailure = section.Key("stop_on_dependency_failure").MustBool(false)
 
 	// Parse dependencies
 	dependsOn := section.Key("depends_on").String()

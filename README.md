@@ -152,7 +152,6 @@ Each program section defines a process to manage:
 - `startsecs`: Seconds to wait before considering start successful (default: 1)
 - `startretries`: Number of retries before giving up (default: 3)
 - `depends_on`: Comma-separated list of program names that must be running first
-- `stop_on_dependency_failure`: Stop this process if a dependency stops (default: false)
 - `stdout_logfile`: Path to stdout log file
 - `stderr_logfile`: Path to stderr log file
 - `stdout_logfile_maxbytes`: Maximum size before rotation (supports KB, MB, GB suffixes, default: 50MB)
@@ -167,7 +166,7 @@ Each program section defines a process to manage:
 
 ## Process States
 
-- `STOPPED`: Process was stopped by supavisor (e.g., via `sctl stop` or dependency failure)
+- `STOPPED`: Process was stopped by supavisor (e.g., via `sctl stop`)
 - `STARTING`: Process is starting up
 - `RUNNING`: Process is running normally
 - `BACKOFF`: Process failed to start, waiting before retry
@@ -181,7 +180,7 @@ Processes can depend on other processes using the `depends_on` option. The supav
 
 1. Start processes in dependency order (topological sort)
 2. Ensure dependencies are running before starting dependent processes
-3. Optionally stop dependent processes when a dependency fails (if `stop_on_dependency_failure=true`)
+3. When a dependency stops (crashes or exits), it is restarted according to its `autorestart` policy. Dependent processes continue running.
 
 Circular dependencies are detected and rejected during configuration validation.
 
@@ -220,7 +219,6 @@ command=/usr/bin/python app.py
 depends_on=database
 autostart=true
 autorestart=always
-stop_on_dependency_failure=true
 ```
 
 ### Process with Log Rotation

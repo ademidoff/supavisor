@@ -316,23 +316,6 @@ func (s *Supavisor) StopProcess(name string) error {
 	currentState := proc.GetState()
 	s.logger.Info("Current process state", "process", name, "state", currentState, "pid", proc.GetPID())
 
-	// Check if any processes depend on this one
-	dependents := s.dependencyGraph.GetDependents(name)
-	if len(dependents) > 0 {
-		s.logger.Info("Process has dependents", "process", name, "count", len(dependents), "dependents", dependents)
-		for _, dep := range dependents {
-			depProc, exists := s.processes[dep]
-			if exists && depProc.GetState() == process.StateRunning {
-				// Stop dependent processes if configured
-				depConfig := s.config.Programs[dep]
-				if depConfig.StopOnDependencyFailure {
-					s.logger.Info("Stopping dependent process due to dependency failure", "process", name, "dependent", dep)
-					depProc.Stop()
-				}
-			}
-		}
-	}
-
 	s.logger.Info("Calling Stop()", "process", name)
 	if err := proc.Stop(); err != nil {
 		s.logger.Error("Error stopping process", "process", name, "error", err)
@@ -408,30 +391,6 @@ func (s *Supavisor) onProcessStateChange(name string, prevState, newState proces
 		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
 
-	// Don't handle dependency failures during shutdown
-	if !s.running {
-		return
-	}
-
-	// Handle dependency failures
-	if newState == process.StateExited || newState == process.StateFatal {
-		if newState == process.StateExited {
-			s.logger.Info("Process exited, checking dependents", "process", name)
-		} else {
-			s.logger.Error("Process failed, checking dependents", "process", name)
-		}
-		dependents := s.dependencyGraph.GetDependents(name)
-		for _, dep := range dependents {
-			depProc, exists := s.processes[dep]
-			if exists {
-				depConfig := s.config.Programs[dep]
-				if depConfig.StopOnDependencyFailure {
-					s.logger.Info("Stopping dependent process due to dependency failure", "process", name, "dependent", dep)
-					depProc.Stop()
-				}
-			}
-		}
-	}
 }
 
 // onDependencyStop is called when a dependency stops
