@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"text/tabwriter"
 	"time"
 
@@ -80,7 +81,12 @@ func printStatus(resp api.Response) {
 		restarts := getInt(procMap, "restart_count")
 		uptime := getString(procMap, "uptime")
 
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%s\n", name, state, pid, exitCode, restarts, uptime)
+		pidStr := "N/A"
+		if slices.Contains([]string{"RUNNING", "STARTING", "STOPPING"}, state) {
+			pidStr = fmt.Sprintf("%d", pid)
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", name, state, pidStr, exitCode, restarts, uptime)
 	}
 
 	w.Flush()
