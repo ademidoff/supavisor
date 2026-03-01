@@ -332,13 +332,13 @@ func parseEnvironmentVariables(envStr string) (map[string]string, error) {
 // Values can be quoted to contain commas
 func parseEnvPair(pair string) (string, string, error) {
 	// Find the first '=' sign (keys shouldn't have quotes or special chars)
-	equalsIdx := strings.Index(pair, "=")
-	if equalsIdx == -1 {
+	before, after, ok := strings.Cut(pair, "=")
+	if !ok {
 		return "", "", fmt.Errorf("missing '=' in environment variable")
 	}
 
-	key := strings.TrimSpace(pair[:equalsIdx])
-	value := strings.TrimSpace(pair[equalsIdx+1:])
+	key := strings.TrimSpace(before)
+	value := strings.TrimSpace(after)
 
 	// Remove surrounding quotes from value if present
 	if len(value) >= 2 {

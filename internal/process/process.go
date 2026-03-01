@@ -213,12 +213,20 @@ func (p *Process) Start() error {
 
 // Stop stops the process
 func (p *Process) Stop() error {
-	if p.GetState() == StateStopped || p.GetState() == StateExited {
-		p.logger.Info("Already stopped or exited")
+	state := p.GetState()
+	if state == StateStopped || state == StateExited {
+		p.logger.Debug("Process was already stopped or exited", "name", p.config.Name)
+		return nil
+	}
+	if state == StateFatal || state == StateBackoff {
+		// Process already failed/stopped, just clean up
+		p.logger.Info("Process already in terminal state, cleaning up", "name", p.config.Name)
+		p.cancel()
+		p.closeLogFiles()
 		return nil
 	}
 
-	p.logger.Info("Stopping process", "pid", p.pid)
+	p.logger.Info("Stopping process", "pid", p.pid, "name", p.config.Name)
 
 	// Mark that this stop was initiated externally (by supervisor or user command)
 	p.stopMutex.Lock()
