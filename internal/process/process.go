@@ -57,8 +57,8 @@ type Process struct {
 // NewProcess creates a new process instance
 func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 	ctx, cancel := context.WithCancel(context.Background())
-	// Create a logger with the component set to the process name
-	procLogger := logger.With("component", cfg.Name)
+	// Create a logger with component=process and process=name for consistent structured logging
+	procLogger := logger.With("component", "process", "process", cfg.Name)
 	return &Process{
 		config:      cfg,
 		logger:      procLogger,
@@ -215,18 +215,18 @@ func (p *Process) Start() error {
 func (p *Process) Stop() error {
 	state := p.GetState()
 	if state == StateStopped || state == StateExited {
-		p.logger.Debug("Process was already stopped or exited", "name", p.config.Name)
+		p.logger.Debug("Process was already stopped or exited")
 		return nil
 	}
 	if state == StateFatal || state == StateBackoff {
 		// Process already failed/stopped, just clean up
-		p.logger.Info("Process already in terminal state, cleaning up", "name", p.config.Name)
+		p.logger.Info("Process already in terminal state, cleaning up")
 		p.cancel()
 		p.closeLogFiles()
 		return nil
 	}
 
-	p.logger.Info("Stopping process", "pid", p.pid, "name", p.config.Name)
+	p.logger.Info("Stopping process", "pid", p.pid)
 
 	// Mark that this stop was initiated externally (by supervisor or user command)
 	p.stopMutex.Lock()
@@ -325,7 +325,7 @@ func (p *Process) monitor() {
 			// Process was being stopped
 			if stoppedExternally {
 				// Stopped externally by supervisor or user command
-				p.logger.Info("Process stopped externally", "exit_code", p.exitCode)
+				p.logger.Info("Process stopped", "exit_code", p.exitCode)
 				p.setState(StateStopped)
 			} else {
 				// Process exited on its own while we were trying to stop it
@@ -334,7 +334,7 @@ func (p *Process) monitor() {
 			}
 		} else if stoppedExternally {
 			// Process was stopped externally but exited before we could send the signal
-			p.logger.Info("Process stopped externally", "exit_code", p.exitCode)
+			p.logger.Info("Process exited before it was stopped", "exit_code", p.exitCode)
 			p.setState(StateStopped)
 		} else {
 			// Process exited on its own

@@ -122,7 +122,7 @@ func (s *Supavisor) Stop() error {
 	// Stop all processes
 	s.processMutex.Lock()
 	processCount := len(s.processes)
-	s.logger.Info("Stopping processes", "count", processCount)
+	s.logger.Info("Stopping processes...", "count", processCount)
 	for _, proc := range s.processes {
 		_ = proc.Stop()
 	}
