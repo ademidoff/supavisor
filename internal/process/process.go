@@ -361,9 +361,9 @@ func (p *Process) monitor() {
 			}
 
 			if shouldRestart {
-				if p.restartCount < p.config.StartRetries {
+				if p.restartCount < p.config.MaxRestarts {
 					p.restartCount++
-					p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_retries", p.config.StartRetries)
+					p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_restarts", p.config.MaxRestarts)
 					// Wait before restarting (exponential backoff)
 					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
 					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second) //nolint:gosec
@@ -379,7 +379,7 @@ func (p *Process) monitor() {
 						}
 					}
 				} else {
-					p.logger.Error("Exceeded maximum restart attempts, setting state to FATAL", "max_retries", p.config.StartRetries)
+					p.logger.Error("Exceeded maximum restart attempts, setting state to FATAL", "max_restarts", p.config.MaxRestarts)
 					p.setState(StateFatal)
 				}
 			} else {

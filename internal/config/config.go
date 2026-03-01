@@ -33,11 +33,13 @@ type ProgramConfig struct {
 	Name                  string
 	Command               string
 	Directory             string
+	Environment           map[string]string
 	Autostart             bool
 	Autorestart           RestartPolicy
-	StartSecs             int
-	StartRetries          int
 	DependsOn             []string
+	Priority              int
+	StartSecs             int
+	MaxRestarts           int
 	StdoutLogfile         string
 	StderrLogfile         string
 	StdoutLogfileMaxBytes int64
@@ -46,9 +48,7 @@ type ProgramConfig struct {
 	StderrLogfileMaxBytes int64
 	StderrLogfileBackups  int
 	StderrLogfileMaxAge   int // days
-	Environment           map[string]string
 	User                  string
-	Priority              int
 }
 
 // Config represents the complete configuration
@@ -115,7 +115,7 @@ func parseProgramSection(section *ini.Section, name string) (*ProgramConfig, err
 	}
 
 	prog.StartSecs = section.Key("startsecs").MustInt(1)
-	prog.StartRetries = section.Key("startretries").MustInt(3)
+	prog.MaxRestarts = section.Key("max_restarts").MustInt(3)
 
 	// Parse dependencies
 	dependsOn := section.Key("depends_on").String()

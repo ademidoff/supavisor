@@ -150,7 +150,7 @@ Each program section defines a process to manage:
 - `autostart`: Start process automatically on supavisor startup (default: true)
 - `autorestart`: Restart policy - `always`, `never`, or `unexpected` (default: unexpected)
 - `startsecs`: Seconds to wait before considering start successful (default: 1)
-- `startretries`: Number of retries before giving up (default: 3)
+- `max_restarts`: Maximum number of restarts before giving up (default: 3)
 - `depends_on`: Comma-separated list of program names that must be running first
 - `stdout_logfile`: Path to stdout log file
 - `stderr_logfile`: Path to stderr log file
