@@ -7,28 +7,29 @@ import (
 )
 
 func TestParseConfigFile(t *testing.T) {
-	// Create a temporary config file
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "test.conf")
+	configPath := filepath.Join(tmpDir, "test.yml")
 
-	configContent := `[supavisor]
-logfile=/var/log/supavisor/supavisor.log
-pidfile=/var/run/supavisor.pid
-socket=/tmp/supavisor.sock
-log_format=json
+	configContent := `supavisor:
+  logfile: /var/log/supavisor/supavisor.log
+  pidfile: /var/run/supavisor.pid
+  socket: /tmp/supavisor.sock
+  log_format: json
 
-[program:testapp]
-command=/usr/bin/testapp
-directory=/opt/testapp
-autostart=true
-autorestart=always
-startsecs=5
-max_restarts=3
-depends_on=database
-stdout_logfile=/var/log/testapp/stdout.log
-stdout_logfile_maxbytes=10MB
-stdout_logfile_backups=5
-stdout_logfile_maxage=7
+programs:
+  testapp:
+    command: /usr/bin/testapp
+    directory: /opt/testapp
+    autostart: true
+    autorestart: always
+    startsecs: 5
+    max_restarts: 3
+    depends_on:
+      - database
+    stdout_logfile: /var/log/testapp/stdout.log
+    stdout_logfile_maxbytes: 10MB
+    stdout_logfile_backups: 5
+    stdout_logfile_maxage: 7
 `
 
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
@@ -41,7 +42,6 @@ stdout_logfile_maxage=7
 		t.Fatalf("Failed to parse config file: %v", err)
 	}
 
-	// Check supavisor config
 	if cfg.Supavisor.LogFile != "/var/log/supavisor/supavisor.log" {
 		t.Errorf("Expected logfile /var/log/supavisor/supavisor.log, got %s", cfg.Supavisor.LogFile)
 	}
@@ -50,7 +50,6 @@ stdout_logfile_maxage=7
 		t.Errorf("Expected log_format json, got %s", cfg.Supavisor.LogFormat)
 	}
 
-	// Check program config
 	prog, exists := cfg.Programs["testapp"]
 	if !exists {
 		t.Fatal("Program 'testapp' not found in config")
@@ -78,15 +77,15 @@ stdout_logfile_maxage=7
 }
 
 func TestParseConfigFile_DefaultLogFormat(t *testing.T) {
-	// Create a temporary config file without log_format
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "test_default.conf")
+	configPath := filepath.Join(tmpDir, "test_default.yml")
 
-	configContent := `[supavisor]
-logfile=/var/log/supavisor/supavisor.log
+	configContent := `supavisor:
+  logfile: /var/log/supavisor/supavisor.log
 
-[program:testapp]
-command=/usr/bin/testapp
+programs:
+  testapp:
+    command: /usr/bin/testapp
 `
 
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
@@ -112,51 +111,56 @@ func TestParseConfigFile_LogLevel(t *testing.T) {
 	}{
 		{
 			name: "explicit debug level",
-			configContent: `[supavisor]
-log_level=debug
+			configContent: `supavisor:
+  log_level: debug
 
-[program:testapp]
-command=/usr/bin/testapp
+programs:
+  testapp:
+    command: /usr/bin/testapp
 `,
 			expectedLevel: "debug",
 		},
 		{
 			name: "explicit info level",
-			configContent: `[supavisor]
-log_level=info
+			configContent: `supavisor:
+  log_level: info
 
-[program:testapp]
-command=/usr/bin/testapp
+programs:
+  testapp:
+    command: /usr/bin/testapp
 `,
 			expectedLevel: "info",
 		},
 		{
 			name: "explicit warn level",
-			configContent: `[supavisor]
-log_level=warn
+			configContent: `supavisor:
+  log_level: warn
 
-[program:testapp]
-command=/usr/bin/testapp
+programs:
+  testapp:
+    command: /usr/bin/testapp
 `,
 			expectedLevel: "warn",
 		},
 		{
 			name: "explicit error level",
-			configContent: `[supavisor]
-log_level=error
+			configContent: `supavisor:
+  log_level: error
 
-[program:testapp]
-command=/usr/bin/testapp
+programs:
+  testapp:
+    command: /usr/bin/testapp
 `,
 			expectedLevel: "error",
 		},
 		{
 			name: "default log level when not specified",
-			configContent: `[supavisor]
-logfile=/var/log/supavisor/supavisor.log
+			configContent: `supavisor:
+  logfile: /var/log/supavisor/supavisor.log
 
-[program:testapp]
-command=/usr/bin/testapp
+programs:
+  testapp:
+    command: /usr/bin/testapp
 `,
 			expectedLevel: "info",
 		},
@@ -165,7 +169,7 @@ command=/usr/bin/testapp
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			configPath := filepath.Join(tmpDir, "test.conf")
+			configPath := filepath.Join(tmpDir, "test.yml")
 
 			err := os.WriteFile(configPath, []byte(tt.configContent), 0644)
 			if err != nil {
@@ -179,6 +183,65 @@ command=/usr/bin/testapp
 
 			if cfg.Supavisor.LogLevel != tt.expectedLevel {
 				t.Errorf("Expected log_level %s, got %s", tt.expectedLevel, cfg.Supavisor.LogLevel)
+			}
+		})
+	}
+}
+
+func TestParseConfigFile_EnvironmentMap(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "test.yml")
+
+	configContent := `supavisor: {}
+
+programs:
+  testapp:
+    command: /usr/bin/testapp
+    environment:
+      KEY1: value1
+      KEY2: "value with spaces"
+      KEY3: "value with, comma"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test config file: %v", err)
+	}
+
+	cfg, err := ParseConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to parse config file: %v", err)
+	}
+
+	prog := cfg.Programs["testapp"]
+	if prog.Environment["KEY1"] != "value1" {
+		t.Errorf("Expected KEY1=value1, got %s", prog.Environment["KEY1"])
+	}
+	if prog.Environment["KEY2"] != "value with spaces" {
+		t.Errorf("Expected KEY2 with spaces, got %s", prog.Environment["KEY2"])
+	}
+	if prog.Environment["KEY3"] != "value with, comma" {
+		t.Errorf("Expected KEY3 with comma, got %s", prog.Environment["KEY3"])
+	}
+}
+
+func TestParseBytes(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+	}{
+		{"10MB", 10 * 1024 * 1024},
+		{"1GB", 1024 * 1024 * 1024},
+		{"500KB", 500 * 1024},
+		{"100", 100},
+		{"", 50 * 1024 * 1024}, // Default 50MB
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := parseBytes(tt.input)
+			if result != tt.expected {
+				t.Errorf("parseBytes(%s) = %d, expected %d", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -246,28 +309,6 @@ func TestParseEnvironmentVariables(t *testing.T) {
 						t.Errorf("Expected %s=%s, got %s=%s", k, v, k, result[k])
 					}
 				}
-			}
-		})
-	}
-}
-
-func TestParseBytes(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected int64
-	}{
-		{"10MB", 10 * 1024 * 1024},
-		{"1GB", 1024 * 1024 * 1024},
-		{"500KB", 500 * 1024},
-		{"100", 100},           // Defaults to bytes
-		{"", 50 * 1024 * 1024}, // Default 50MB
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := parseBytes(tt.input)
-			if result != tt.expected {
-				t.Errorf("parseBytes(%s) = %d, expected %d", tt.input, result, tt.expected)
 			}
 		})
 	}

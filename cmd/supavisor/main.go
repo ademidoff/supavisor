@@ -34,8 +34,8 @@ func main() {
 	var configPath string
 	var logFilePath string
 
-	flag.StringVar(&configPath, "c", "/etc/supavisor/supavisor.conf", "Path to configuration file")
-	flag.StringVar(&configPath, "config", "/etc/supavisor/supavisor.conf", "Path to configuration file")
+	flag.StringVar(&configPath, "c", "/etc/supavisor/supavisor.yml", "Path to configuration file")
+	flag.StringVar(&configPath, "config", "/etc/supavisor/supavisor.yml", "Path to configuration file")
 	flag.StringVar(&logFilePath, "logfile", "", "Optional path to log file (logs go to stdout only in interactive mode)")
 	flag.Parse()
 

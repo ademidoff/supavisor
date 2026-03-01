@@ -59,6 +59,6 @@ clean:
 
 run:
 	@echo "Running supavisor..."
-	@./bin/supavisor -c supavisor.conf &
+	@./bin/supavisor -c supavisor.yml &
 	@echo "Running sctl..."
 	@./bin/sctl status

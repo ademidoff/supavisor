@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/ini.v1"
+	"gopkg.in/yaml.v3"
 )
 
 // RestartPolicy represents the restart behavior for a process
@@ -57,105 +57,164 @@ type Config struct {
 	Programs  map[string]*ProgramConfig
 }
 
-// ParseConfigFile parses an INI configuration file
+// configFile represents the YAML config file structure
+type configFile struct {
+	Supavisor supavisorFile           `yaml:"supavisor"`
+	Programs  map[string]*programFile `yaml:"programs"`
+}
+
+type supavisorFile struct {
+	LogFile   string `yaml:"logfile"`
+	PidFile   string `yaml:"pidfile"`
+	Socket    string `yaml:"socket"`
+	LogFormat string `yaml:"log_format"`
+	LogLevel  string `yaml:"log_level"`
+}
+
+type programFile struct {
+	Command               string            `yaml:"command"`
+	Directory             string            `yaml:"directory"`
+	Environment           map[string]string `yaml:"environment"`
+	Autostart             *bool             `yaml:"autostart"`
+	Autorestart           string            `yaml:"autorestart"`
+	DependsOn             []string          `yaml:"depends_on"`
+	Priority              int               `yaml:"priority"`
+	StartSecs             int               `yaml:"startsecs"`
+	MaxRestarts           int               `yaml:"max_restarts"`
+	StdoutLogfile         string            `yaml:"stdout_logfile"`
+	StderrLogfile         string            `yaml:"stderr_logfile"`
+	StdoutLogfileMaxBytes string            `yaml:"stdout_logfile_maxbytes"`
+	StdoutLogfileBackups  int               `yaml:"stdout_logfile_backups"`
+	StdoutLogfileMaxAge   int               `yaml:"stdout_logfile_maxage"`
+	StderrLogfileMaxBytes string            `yaml:"stderr_logfile_maxbytes"`
+	StderrLogfileBackups  int               `yaml:"stderr_logfile_backups"`
+	StderrLogfileMaxAge   int               `yaml:"stderr_logfile_maxage"`
+	User                  string            `yaml:"user"`
+}
+
+// ParseConfigFile parses a YAML configuration file
 func ParseConfigFile(path string) (*Config, error) {
-	cfg, err := ini.Load(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config file: %w", err)
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var cfg configFile
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	config := &Config{
+		Supavisor: SupavisorConfig{
+			LogFile:   cfg.Supavisor.LogFile,
+			PidFile:   defaultString(cfg.Supavisor.PidFile, "/var/run/supavisor.pid"),
+			Socket:    defaultString(cfg.Supavisor.Socket, "/tmp/supavisor.sock"),
+			LogFormat: defaultString(cfg.Supavisor.LogFormat, "text"),
+			LogLevel:  defaultString(cfg.Supavisor.LogLevel, "info"),
+		},
 		Programs: make(map[string]*ProgramConfig),
 	}
 
-	// Parse [supavisor] section
-	if sec := cfg.Section("supavisor"); sec != nil {
-		config.Supavisor.LogFile = sec.Key("logfile").String()
-		config.Supavisor.PidFile = sec.Key("pidfile").MustString("/var/run/supavisor.pid")
-		config.Supavisor.Socket = sec.Key("socket").MustString("/tmp/supavisor.sock")
-		config.Supavisor.LogFormat = sec.Key("log_format").MustString("text")
-		config.Supavisor.LogLevel = sec.Key("log_level").MustString("info")
-	}
-
-	// Parse [program:*] sections
-	for _, section := range cfg.Sections() {
-		if after, ok := strings.CutPrefix(section.Name(), "program:"); ok {
-			programName := after
-			programConfig, err := parseProgramSection(section, programName)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse program %s: %w", programName, err)
-			}
-			config.Programs[programName] = programConfig
+	for name, prog := range cfg.Programs {
+		if prog == nil {
+			continue
 		}
+		programConfig, err := convertProgram(name, prog)
+		if err != nil {
+			return nil, fmt.Errorf("program %s: %w", name, err)
+		}
+		config.Programs[name] = programConfig
 	}
 
 	return config, nil
 }
 
-func parseProgramSection(section *ini.Section, name string) (*ProgramConfig, error) {
-	prog := &ProgramConfig{
-		Name:        name,
-		Environment: make(map[string]string),
+func defaultString(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
+	if raw.Command == "" {
+		return nil, fmt.Errorf("command is required")
 	}
 
-	prog.Command = section.Key("command").String()
-	if prog.Command == "" {
-		return nil, fmt.Errorf("command is required for program %s", name)
+	autostart := true
+	if raw.Autostart != nil {
+		autostart = *raw.Autostart
 	}
 
-	prog.Directory = section.Key("directory").MustString("")
-	prog.Autostart = section.Key("autostart").MustBool(true)
-
-	restartPolicy := section.Key("autorestart").MustString("unexpected")
-	switch RestartPolicy(restartPolicy) {
-	case RestartAlways, RestartNever, RestartUnexpected:
-		prog.Autorestart = RestartPolicy(restartPolicy)
+	restartPolicy := defaultString(raw.Autorestart, "unexpected")
+	var autorestart RestartPolicy
+	switch restartPolicy {
+	case "always":
+		autorestart = RestartAlways
+	case "never":
+		autorestart = RestartNever
+	case "unexpected":
+		autorestart = RestartUnexpected
 	default:
 		return nil, fmt.Errorf("invalid autorestart policy: %s (must be always, never, or unexpected)", restartPolicy)
 	}
 
-	prog.StartSecs = section.Key("startsecs").MustInt(1)
-	prog.MaxRestarts = section.Key("max_restarts").MustInt(3)
-
-	// Parse dependencies
-	dependsOn := section.Key("depends_on").String()
-	if dependsOn != "" {
-		deps := strings.SplitSeq(dependsOn, ",")
-		for dep := range deps {
-			dep = strings.TrimSpace(dep)
-			if dep != "" {
-				prog.DependsOn = append(prog.DependsOn, dep)
-			}
-		}
+	startSecs := raw.StartSecs
+	if startSecs == 0 {
+		startSecs = 1
+	}
+	maxRestarts := raw.MaxRestarts
+	if maxRestarts == 0 {
+		maxRestarts = 3
+	}
+	priority := raw.Priority
+	if priority == 0 {
+		priority = 999
 	}
 
-	// Log file settings
-	prog.StdoutLogfile = section.Key("stdout_logfile").MustString("")
-	prog.StderrLogfile = section.Key("stderr_logfile").MustString("")
-
-	// Parse maxbytes (supports MB, KB, GB suffixes)
-	prog.StdoutLogfileMaxBytes = parseBytes(section.Key("stdout_logfile_maxbytes").MustString("50MB"))
-	prog.StdoutLogfileBackups = section.Key("stdout_logfile_backups").MustInt(10)
-	prog.StdoutLogfileMaxAge = section.Key("stdout_logfile_maxage").MustInt(0) // 0 means no age limit
-
-	prog.StderrLogfileMaxBytes = parseBytes(section.Key("stderr_logfile_maxbytes").MustString("50MB"))
-	prog.StderrLogfileBackups = section.Key("stderr_logfile_backups").MustInt(10)
-	prog.StderrLogfileMaxAge = section.Key("stderr_logfile_maxage").MustInt(0)
-
-	// Parse environment variables
-	envStr := section.Key("environment").String()
-	if envStr != "" {
-		envVars, err := parseEnvironmentVariables(envStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse environment variables: %w", err)
-		}
-		maps.Copy(prog.Environment, envVars)
+	env := make(map[string]string)
+	if len(raw.Environment) > 0 {
+		maps.Copy(env, raw.Environment)
 	}
 
-	prog.User = section.Key("user").MustString("")
-	prog.Priority = section.Key("priority").MustInt(999)
+	stdoutMaxBytes := parseBytes(raw.StdoutLogfileMaxBytes)
+	if stdoutMaxBytes == 0 {
+		stdoutMaxBytes = 50 * 1024 * 1024
+	}
+	stderrMaxBytes := parseBytes(raw.StderrLogfileMaxBytes)
+	if stderrMaxBytes == 0 {
+		stderrMaxBytes = 50 * 1024 * 1024
+	}
+	stdoutBackups := raw.StdoutLogfileBackups
+	if stdoutBackups == 0 {
+		stdoutBackups = 10
+	}
+	stderrBackups := raw.StderrLogfileBackups
+	if stderrBackups == 0 {
+		stderrBackups = 10
+	}
 
-	return prog, nil
+	return &ProgramConfig{
+		Name:                  name,
+		Command:               raw.Command,
+		Directory:             raw.Directory,
+		Environment:           env,
+		Autostart:             autostart,
+		Autorestart:           autorestart,
+		DependsOn:             raw.DependsOn,
+		Priority:              priority,
+		StartSecs:             startSecs,
+		MaxRestarts:           maxRestarts,
+		StdoutLogfile:         raw.StdoutLogfile,
+		StderrLogfile:         raw.StderrLogfile,
+		StdoutLogfileMaxBytes: stdoutMaxBytes,
+		StdoutLogfileBackups:  stdoutBackups,
+		StdoutLogfileMaxAge:   raw.StdoutLogfileMaxAge,
+		StderrLogfileMaxBytes: stderrMaxBytes,
+		StderrLogfileBackups:  stderrBackups,
+		StderrLogfileMaxAge:   raw.StderrLogfileMaxAge,
+		User:                  raw.User,
+	}, nil
 }
 
 // parseBytes parses a byte string like "10MB", "1GB", "500KB" into bytes
@@ -276,7 +335,7 @@ func (c *Config) EnsureLogDirectories() error {
 	return nil
 }
 
-// parseEnvironmentVariables parses comma-separated environment variables
+// parseEnvironmentVariables parses comma-separated environment variables (legacy INI format)
 // Supports formats like: KEY1=value1,KEY2=value2,KEY3="value with, comma"
 func parseEnvironmentVariables(envStr string) (map[string]string, error) {
 	result := make(map[string]string)
@@ -328,10 +387,7 @@ func parseEnvironmentVariables(envStr string) (map[string]string, error) {
 }
 
 // parseEnvPair parses a single KEY=VALUE pair
-// Keys should not contain quotes or equals signs
-// Values can be quoted to contain commas
 func parseEnvPair(pair string) (string, string, error) {
-	// Find the first '=' sign (keys shouldn't have quotes or special chars)
 	before, after, ok := strings.Cut(pair, "=")
 	if !ok {
 		return "", "", fmt.Errorf("missing '=' in environment variable")
@@ -340,7 +396,6 @@ func parseEnvPair(pair string) (string, string, error) {
 	key := strings.TrimSpace(before)
 	value := strings.TrimSpace(after)
 
-	// Remove surrounding quotes from value if present
 	if len(value) >= 2 {
 		if (value[0] == '"' && value[len(value)-1] == '"') ||
 			(value[0] == '\'' && value[len(value)-1] == '\'') {
