@@ -137,7 +137,7 @@ func (p *Process) Start() error {
 	}
 
 	// Parse command
-	p.logger.Info("Parsing command", "command", p.config.Command)
+	p.logger.Debug("Parsing command", "command", p.config.Command)
 	parts := parseCommand(p.config.Command)
 	if len(parts) == 0 {
 		p.setState(StateFatal)
@@ -145,7 +145,7 @@ func (p *Process) Start() error {
 	}
 
 	// Create command
-	p.logger.Info("Creating command", "command_parts", parts)
+	p.logger.Debug("Creating command", "command_parts", parts)
 	p.cmd = exec.CommandContext(p.ctx, parts[0], parts[1:]...)
 
 	// Set working directory
@@ -169,7 +169,7 @@ func (p *Process) Start() error {
 	p.cmd.Stderr = p.stderrFile
 
 	// Start the process
-	p.logger.Info("Executing command")
+	p.logger.Info("Executing command", "command", p.cmd.String())
 	if err := p.cmd.Start(); err != nil {
 		p.logger.Error("Failed to start", "error", err)
 		p.setState(StateFatal)
@@ -226,20 +226,28 @@ func (p *Process) Stop() error {
 		return nil
 	}
 
-	p.logger.Info("Stopping process", "pid", p.pid)
-
 	// Mark that this stop was initiated externally (by supervisor or user command)
 	p.stopMutex.Lock()
 	p.stoppedExternally = true
 	p.stopMutex.Unlock()
 
+	// Re-check state - process may have already exited (e.g. received SIGTERM with parent)
+	state = p.GetState()
+	if state == StateStopped || state == StateExited {
+		p.logger.Info("Process already exited, cleaning up")
+		p.cancel()
+		p.closeLogFiles()
+		return nil
+	}
+
+	p.logger.Info("Stopping process", "pid", p.pid)
 	p.setState(StateStopping)
 
 	if p.cmd != nil && p.cmd.Process != nil {
-		// Try graceful shutdown first
-		p.logger.Info("Sending SIGINT for graceful shutdown")
-		if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
-			p.logger.Warn("Failed to send SIGINT", "error", err)
+		// Check if process is still alive before signaling (it may have exited with parent's SIGTERM)
+		if err := p.cmd.Process.Signal(syscall.Signal(0)); err == nil {
+			p.logger.Info("Sending SIGINT for graceful shutdown")
+			_ = p.cmd.Process.Signal(os.Interrupt)
 		}
 
 		// Wait for graceful shutdown with timeout
