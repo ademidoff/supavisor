@@ -1,5 +1,5 @@
 // Package api contains the API messages for the supavisor and sctl.
-package api //nolint:revive
+package api
 
 // Request represents a request from the CLI
 type Request struct {

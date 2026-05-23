@@ -57,11 +57,11 @@ type Process struct {
 // NewProcess creates a new process instance
 func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 	ctx, cancel := context.WithCancel(context.Background())
-	// Create a logger with component=process and process=name for consistent structured logging
-	procLogger := logger.With("component", "process", "process", cfg.Name)
+	pLogger := logger.With("component", "process", "process", cfg.Name)
+
 	return &Process{
 		config:      cfg,
-		logger:      procLogger,
+		logger:      pLogger,
 		state:       StateStopped,
 		stopChan:    make(chan struct{}),
 		restartChan: make(chan struct{}),
@@ -280,14 +280,13 @@ func (p *Process) Stop() error {
 
 // Restart restarts the process
 func (p *Process) Restart() error {
-	p.logger.Info("Restarting")
+	p.logger.Info("Restarting process")
 	if err := p.Stop(); err != nil {
 		p.logger.Error("Error during stop phase of restart", "error", err)
 		return err
 	}
-	p.logger.Info("Waiting 100ms before restart")
+	p.logger.Debug("Waiting 100ms before restart")
 	time.Sleep(100 * time.Millisecond)
-	p.logger.Info("Starting after restart")
 	return p.Start()
 }
 
@@ -374,7 +373,7 @@ func (p *Process) monitor() {
 					p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_restarts", p.config.MaxRestarts)
 					// Wait before restarting (exponential backoff)
 					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
-					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second) //nolint:gosec
+					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second)
 					p.logger.Info("Waiting before restart", "backoff", backoff)
 					time.Sleep(backoff)
 
@@ -396,9 +395,9 @@ func (p *Process) monitor() {
 		}
 
 	case <-p.ctx.Done():
-		// Context was cancelled, process might still be running
+		// Context was canceled, process might still be running
 		// This shouldn't normally happen as Stop() waits for monitor to complete
-		p.logger.Info("Monitor context cancelled")
+		p.logger.Info("Monitor context canceled")
 		return
 	}
 }
@@ -415,12 +414,12 @@ func (p *Process) setupLogFiles() error {
 		// Ensure directory exists
 		dir := getDir(stdoutPath)
 		if dir != "" {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("failed to create log directory: %w", err)
 			}
 		}
 
-		file, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		file, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return fmt.Errorf("failed to open shared log file: %w", err)
 		}
@@ -457,12 +456,12 @@ func (p *Process) setupLogFiles() error {
 			// Ensure directory exists
 			dir := getDir(stdoutPath)
 			if dir != "" {
-				if err := os.MkdirAll(dir, 0755); err != nil {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return fmt.Errorf("failed to create log directory: %w", err)
 				}
 			}
 
-			file, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			file, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 			if err != nil {
 				return fmt.Errorf("failed to open stdout log: %w", err)
 			}
@@ -480,12 +479,12 @@ func (p *Process) setupLogFiles() error {
 			// Ensure directory exists
 			dir := getDir(stderrPath)
 			if dir != "" {
-				if err := os.MkdirAll(dir, 0755); err != nil {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return fmt.Errorf("failed to create log directory: %w", err)
 				}
 			}
 
-			file, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			file, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 			if err != nil {
 				return fmt.Errorf("failed to open stderr log: %w", err)
 			}

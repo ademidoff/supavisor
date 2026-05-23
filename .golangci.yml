@@ -6,7 +6,7 @@ output:
     text:
       path: stdout
       print-linter-name: true
-      print-issued-lines: true
+      print-issued-lines: false
 linters:
   default: none
   enable:
@@ -131,6 +131,7 @@ linters:
           - errcheck
           - funlen
           - gocognit
+          - goconst
           - gocyclo
           - gosec
         path: _test\.go

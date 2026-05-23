@@ -390,7 +390,6 @@ func (s *Supavisor) onProcessStateChange(name string, prevState, newState proces
 	if prevState != newState {
 		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
-
 }
 
 // onDependencyStop is called when a dependency stops
@@ -442,7 +441,7 @@ func (s *Supavisor) checkIfRunning() error {
 				}
 			}
 			// PID file exists but process is not running - this is a stale file
-			return fmt.Errorf("found stale PID file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs.",
+			return fmt.Errorf("found stale PID file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs", //nolint:lll
 				s.config.Supavisor.PidFile)
 		}
 	}
@@ -460,7 +459,7 @@ func (s *Supavisor) checkIfRunning() error {
 				}
 			}
 			// Socket file exists but not in use - this is a stale file
-			return fmt.Errorf("found stale socket file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs.",
+			return fmt.Errorf("found stale socket file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs", //nolint:lll
 				s.config.Supavisor.Socket)
 		}
 	}
@@ -475,7 +474,7 @@ func (s *Supavisor) writePIDFile() error {
 	}
 
 	pid := os.Getpid()
-	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0644)
+	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0o644)
 }
 
 // removePIDFile removes the PID file

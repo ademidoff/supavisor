@@ -32,7 +32,7 @@ programs:
     stdout_logfile_maxage: 7
 `
 
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	err := os.WriteFile(configPath, []byte(configContent), 0o644)
 	if err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
@@ -88,7 +88,7 @@ programs:
     command: /usr/bin/testapp
 `
 
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	err := os.WriteFile(configPath, []byte(configContent), 0o644)
 	if err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
@@ -171,7 +171,7 @@ programs:
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "test.yml")
 
-			err := os.WriteFile(configPath, []byte(tt.configContent), 0644)
+			err := os.WriteFile(configPath, []byte(tt.configContent), 0o644)
 			if err != nil {
 				t.Fatalf("Failed to create test config file: %v", err)
 			}
@@ -203,7 +203,7 @@ programs:
       KEY3: "value with, comma"
 `
 
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	err := os.WriteFile(configPath, []byte(configContent), 0o644)
 	if err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}

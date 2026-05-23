@@ -1,8 +1,11 @@
 module github.com/ademidoff/supavisor
 
-go 1.25.7
+go 1.26.3
 
-tool golang.org/x/tools/cmd/goimports
+tool (
+	golang.org/x/tools/cmd/goimports
+	mvdan.cc/gofumpt
+)
 
 require (
 	golang.org/x/term v0.38.0
@@ -10,9 +13,10 @@ require (
 )
 
 require (
-	golang.org/x/mod v0.31.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/telemetry v0.0.0-20251203150158-8fff8a5912fc // indirect
-	golang.org/x/tools v0.40.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
+	golang.org/x/tools v0.44.0 // indirect
+	mvdan.cc/gofumpt v0.10.0 // indirect
 )

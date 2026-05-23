@@ -21,7 +21,7 @@ func TestStopProcess_DoesNotStopDependents(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "s.sock")
 	pidPath := filepath.Join(tmpDir, "supavisor.pid")
 	logDir := filepath.Join(tmpDir, "logs")
-	_ = os.MkdirAll(logDir, 0755)
+	_ = os.MkdirAll(logDir, 0o755)
 
 	cfg := &config.Config{
 		Supavisor: config.SupavisorConfig{

@@ -231,7 +231,7 @@ func TestLogFormatSelection(t *testing.T) {
 
 // TestReplaceAttr tests the custom attribute replacement function
 func TestReplaceAttr(t *testing.T) {
-	replaceAttr := func(groups []string, a slog.Attr) slog.Attr {
+	replaceAttr := func(_ []string, a slog.Attr) slog.Attr {
 		if a.Key == slog.LevelKey {
 			level := a.Value.Any().(slog.Level)
 			a.Value = slog.StringValue(strings.ToLower(level.String()))

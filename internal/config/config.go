@@ -327,7 +327,7 @@ func (c *Config) EnsureLogDirectories() error {
 	}
 
 	for dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create log directory %s: %w", dir, err)
 		}
 	}

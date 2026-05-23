@@ -67,14 +67,14 @@ func main() {
 	if logFilePath != "" {
 		// Ensure log directory exists
 		if dir := filepath.Dir(logFilePath); dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0755); err != nil { //nolint:govet
+			if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:govet
 				fmt.Fprintf(os.Stderr, "Error: failed to create log directory: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
 		// Open log file for appending
-		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644) //nolint:govet
+		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) //nolint:govet
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to open log file: %v\n", err)
 			os.Exit(1)

@@ -3,6 +3,7 @@ package supavisor
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"syscall"
@@ -44,7 +45,7 @@ func (s *IPCServer) Start() error {
 	s.listener = listener
 
 	// Set socket permissions
-	if err := os.Chmod(s.socketPath, 0666); err != nil {
+	if err := os.Chmod(s.socketPath, 0o666); err != nil {
 		return fmt.Errorf("failed to set socket permissions: %w", err)
 	}
 
@@ -192,7 +193,10 @@ func (s *IPCServer) handleShutdown() *api.Response {
 		// Send SIGTERM to ourselves
 		pid := os.Getpid()
 		proc, _ := os.FindProcess(pid)
-		proc.Signal(syscall.SIGTERM)
+		err := proc.Signal(syscall.SIGTERM)
+		if err != nil {
+			slog.Error("failed to send SIGTERM", "error", err)
+		}
 	}()
 	return &api.Response{Success: true, Message: "shutdown initiated"}
 }

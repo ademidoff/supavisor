@@ -16,7 +16,7 @@ func TestRotator_Rotate(t *testing.T) {
 		content[i] = 'A'
 	}
 
-	err := os.WriteFile(logPath, content, 0644)
+	err := os.WriteFile(logPath, content, 0o644)
 	if err != nil {
 		t.Fatalf("Failed to create test log file: %v", err)
 	}

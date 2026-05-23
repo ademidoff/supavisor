@@ -40,8 +40,9 @@ supavisor manages processes using the following pattern:
 ### Error Handling
 - Wrap errors with context: `fmt.Errorf("descriptive context: %w", err)`
 - Return early on errors to avoid deep nesting
-- Use `errors.Is()` and `errors.As()` for error type checking
-- Use standard `errors` package
+- Use the standard library `errors` package
+- Use `errors.Is()` and `errors.As()` or `errors.AsType` for error type checking
+- Do not inline `if err := ...; err != nil ...`, put the error checking on the second line
 
 ### Logging
 - Use structured logging with `slog`

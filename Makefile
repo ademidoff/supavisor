@@ -1,7 +1,7 @@
 .PHONY: build test clean run lint lint-install format
 
 # Version of golangci-lint to use
-GOLANGCI_LINT_VERSION := v2.7.2
+GOLANGCI_LINT_VERSION := v2.12.2
 
 # Path to golangci-lint binary
 GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
@@ -22,14 +22,12 @@ test:
 	@echo "Running tests..."
 	@go test -v ./...
 
-# Install golangci-lint if not present
+# Install golangci-lint if not present or version doesn't match
 lint-install:
-	@if [ -z "$(GOLANGCI_LINT)" ]; then \
+	@if [ ! -f ./bin/golangci-lint ] || ! ./bin/golangci-lint --version 2>/dev/null | grep -qF "$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))"; then \
 		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b ./bin $(GOLANGCI_LINT_VERSION); \
+		GOBIN=$(CURDIR)/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
 		echo "golangci-lint installed successfully"; \
-	else \
-		echo "golangci-lint is already installed at $(GOLANGCI_LINT)"; \
 	fi
 
 # Run static analysis with golangci-lint
@@ -42,10 +40,10 @@ lint: lint-install
 	$(GOLANGCI_LINT) run --timeout=5m ./...
 	@echo "Linting complete!"
 
-# Format code with gofmt and goimports
+# Format code with gofumpt and goimports
 format:
-	@echo "Formatting code with go fmt..."
-	@go fmt ./...
+	@echo "Formatting code with gofumpt..."
+	@go tool gofumpt -w .
 	@echo "Organizing imports with goimports..."
 	@go tool goimports -w .
 	@echo "Formatting complete!"
