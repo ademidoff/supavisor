@@ -15,10 +15,10 @@ const msgProcessNameRequired = "process name required"
 
 // IPCServer handles communication with the CLI tool
 type IPCServer struct {
-	socketPath string
 	listener   net.Listener
 	supavisor  *Supavisor
 	stopChan   chan struct{}
+	socketPath string
 }
 
 // NewIPCServer creates a new IPC server

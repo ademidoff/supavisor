@@ -79,6 +79,7 @@ linters:
     mnd:
       ignored-numbers:
         - "0o644"
+        - "0o600"
         - "0o755"
         - "0o666"
         - "10"
@@ -146,10 +147,6 @@ linters:
         path: internal/supavisor/
         text: Error return value of `.*\.(Stop|Signal|FindProcess|StartProcess)` is not checked
       - linters:
-          - revive
-        path: internal/supavisor/
-        text: Unhandled error in call to function
-      - linters:
           - errorlint
         path: internal/process/process.go
         text: type assertion on error will fail on wrapped errors
@@ -169,10 +166,10 @@ linters:
           - dupl
         path: internal/process/process.go
         text: lines are duplicate
-      - linters:
-          - gocritic
-        path: cmd/
-        text: exitAfterDefer
+      # - linters:
+      #     - gocritic
+      #   path: cmd/
+      #   text: exitAfterDefer
       - linters:
           - govet
         path: .*_test\.go
@@ -197,18 +194,6 @@ linters:
         text: 'G505: Blacklisted import crypto/sha1: weak cryptographic primitive'
       - path: (.+)\.go$
         text: 'G601: Implicit memory aliasing in for loop'
-      - path: (.+)\.go$
-        text: 'G306: Expect WriteFile permissions'
-      - path: (.+)\.go$
-        text: 'SA9003: empty branch'
-      - path: (.+)\.go$
-        text: 'fieldalignment:'
-      - path: (.+)\.go$
-        text: 'unnamedResult:'
-      - path: (.+)\.go$
-        text: 'emptyStringTest:'
-      - path: (.+)\.go$
-        text: 'paramTypeCombine:'
     paths:
       - .*\.pb\.go$
       - .*\.gen\.go$

@@ -13,16 +13,16 @@ const rotatorCheckInterval = 5 * time.Second
 
 // Rotator handles log file rotation
 type Rotator struct {
+	lastCheck     time.Time
 	filePath      string
+	checkInterval time.Duration
 	maxBytes      int64
 	backups       int
 	maxAge        int // days, 0 means no age limit
-	lastCheck     time.Time
-	checkInterval time.Duration
 }
 
 // NewRotator creates a new log rotator
-func NewRotator(filePath string, maxBytes int64, backups int, maxAge int) *Rotator {
+func NewRotator(filePath string, maxBytes int64, backups, maxAge int) *Rotator {
 	return &Rotator{
 		filePath:      filePath,
 		maxBytes:      maxBytes,
@@ -208,7 +208,7 @@ func isNumeric(s string) bool {
 			return false
 		}
 	}
-	return len(s) > 0
+	return s != ""
 }
 
 func parseBackupNumber(s string) int {

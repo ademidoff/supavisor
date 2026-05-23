@@ -32,37 +32,37 @@ type SupavisorConfig struct {
 
 // ProgramConfig represents configuration for a single program
 type ProgramConfig struct {
+	Environment           map[string]string
 	Name                  string
 	Command               string
 	Directory             string
-	Environment           map[string]string
-	Autostart             bool
 	Autorestart           RestartPolicy
+	StdoutLogfile         string
+	StderrLogfile         string
+	User                  string
 	DependsOn             []string
+	Autostart             bool
 	Priority              int
 	StartSecs             int
 	MaxRestarts           int
-	StdoutLogfile         string
-	StderrLogfile         string
 	StdoutLogfileMaxBytes int64
 	StdoutLogfileBackups  int
 	StdoutLogfileMaxAge   int // days
 	StderrLogfileMaxBytes int64
 	StderrLogfileBackups  int
 	StderrLogfileMaxAge   int // days
-	User                  string
 }
 
 // Config represents the complete configuration
 type Config struct {
-	Supavisor SupavisorConfig
 	Programs  map[string]*ProgramConfig
+	Supavisor SupavisorConfig
 }
 
 // configFile represents the YAML config file structure
 type configFile struct {
-	Supavisor supavisorFile           `yaml:"supavisor"`
 	Programs  map[string]*programFile `yaml:"programs"`
+	Supavisor supavisorFile           `yaml:"supavisor"`
 }
 
 type supavisorFile struct {
@@ -74,24 +74,24 @@ type supavisorFile struct {
 }
 
 type programFile struct {
-	Command               string            `yaml:"command"`
-	Directory             string            `yaml:"directory"`
 	Environment           map[string]string `yaml:"environment"`
 	Autostart             *bool             `yaml:"autostart"`
+	Command               string            `yaml:"command"`
+	Directory             string            `yaml:"directory"`
 	Autorestart           string            `yaml:"autorestart"`
+	StdoutLogfile         string            `yaml:"stdout_logfile"`
+	StderrLogfile         string            `yaml:"stderr_logfile"`
+	StdoutLogfileMaxBytes string            `yaml:"stdout_logfile_maxbytes"`
+	StderrLogfileMaxBytes string            `yaml:"stderr_logfile_maxbytes"`
+	User                  string            `yaml:"user"`
 	DependsOn             []string          `yaml:"depends_on"`
 	Priority              int               `yaml:"priority"`
 	StartSecs             int               `yaml:"startsecs"`
 	MaxRestarts           int               `yaml:"max_restarts"`
-	StdoutLogfile         string            `yaml:"stdout_logfile"`
-	StderrLogfile         string            `yaml:"stderr_logfile"`
-	StdoutLogfileMaxBytes string            `yaml:"stdout_logfile_maxbytes"`
 	StdoutLogfileBackups  int               `yaml:"stdout_logfile_backups"`
 	StdoutLogfileMaxAge   int               `yaml:"stdout_logfile_maxage"`
-	StderrLogfileMaxBytes string            `yaml:"stderr_logfile_maxbytes"`
 	StderrLogfileBackups  int               `yaml:"stderr_logfile_backups"`
 	StderrLogfileMaxAge   int               `yaml:"stderr_logfile_maxage"`
-	User                  string            `yaml:"user"`
 }
 
 // ParseConfigFile parses a YAML configuration file
@@ -389,14 +389,14 @@ func parseEnvironmentVariables(envStr string) (map[string]string, error) {
 }
 
 // parseEnvPair parses a single KEY=VALUE pair
-func parseEnvPair(pair string) (string, string, error) {
+func parseEnvPair(pair string) (key, value string, err error) {
 	before, after, ok := strings.Cut(pair, "=")
 	if !ok {
 		return "", "", fmt.Errorf("missing '=' in environment variable")
 	}
 
-	key := strings.TrimSpace(before)
-	value := strings.TrimSpace(after)
+	key = strings.TrimSpace(before)
+	value = strings.TrimSpace(after)
 
 	if len(value) >= 2 {
 		if (value[0] == '"' && value[len(value)-1] == '"') ||

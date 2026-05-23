@@ -6,10 +6,10 @@ import (
 
 func TestGraph_TopologicalSort(t *testing.T) {
 	tests := []struct {
-		name       string
 		nodes      map[string][]string
-		wantErr    bool
 		checkOrder func([]string) bool
+		name       string
+		wantErr    bool
 	}{
 		{
 			name: "simple linear dependencies",

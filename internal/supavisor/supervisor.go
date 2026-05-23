@@ -25,10 +25,10 @@ const (
 type ProcessStatusInfo struct {
 	Name         string
 	State        process.State
+	Uptime       string
 	PID          int
 	ExitCode     int
 	RestartCount int
-	Uptime       string
 }
 
 // Supavisor manages all processes
@@ -37,10 +37,10 @@ type Supavisor struct {
 	logger          *slog.Logger
 	processLogger   *slog.Logger
 	processes       map[string]*process.Process
-	processMutex    sync.RWMutex
 	dependencyGraph *dependency.Graph
 	ipcServer       *IPCServer
 	stopChan        chan struct{}
+	processMutex    sync.RWMutex
 	running         bool
 }
 
@@ -137,7 +137,9 @@ func (s *Supavisor) Stop() error {
 	// Stop IPC server
 	if s.ipcServer != nil {
 		s.logger.Info("Stopping IPC server")
-		s.ipcServer.Stop()
+		if err := s.ipcServer.Stop(); err != nil {
+			s.logger.Error("failed to stop IPC server", "error", err)
+		}
 	}
 
 	// Remove PID file
@@ -156,7 +158,9 @@ func (s *Supavisor) startAutostartProcesses() {
 		// Start processes in config order
 		for name, progConfig := range s.config.Programs {
 			if progConfig.Autostart {
-				s.StartProcess(name)
+				if err := s.StartProcess(name); err != nil {
+					s.logger.Error("failed to start process", "process", name, "error", err)
+				}
 			}
 		}
 		return
@@ -431,7 +435,9 @@ func (s *Supavisor) setupSignalHandling() {
 	go func() {
 		sig := <-sigChan
 		s.logger.Info("Received signal to stop supavisor", "signal", sig.String())
-		s.Stop()
+		if err := s.Stop(); err != nil {
+			s.logger.Error("failed to stop supavisor", "error", err)
+		}
 		os.Exit(0)
 	}()
 }
@@ -485,7 +491,7 @@ func (s *Supavisor) writePIDFile() error {
 	}
 
 	pid := os.Getpid()
-	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0o644)
+	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0o600)
 }
 
 // removePIDFile removes the PID file

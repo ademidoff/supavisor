@@ -23,17 +23,11 @@ const (
 
 // Process represents a managed process
 type Process struct {
-	config       *config.ProgramConfig
-	logger       *slog.Logger
-	cmd          *exec.Cmd
-	state        State
-	stateMutex   sync.RWMutex
-	pid          int
-	exitCode     int
-	startTime    time.Time
-	stopTime     time.Time
-	restartCount int
-	lastError    error
+	startTime time.Time
+	stopTime  time.Time
+	config    *config.ProgramConfig
+	logger    *slog.Logger
+	cmd       *exec.Cmd
 
 	// Log rotation
 	stdoutRotator *logrotate.Rotator
@@ -42,23 +36,31 @@ type Process struct {
 	// File handles for logs
 	stdoutFile *os.File
 	stderrFile *os.File
-	// sharedLogFile indicates if stdout and stderr share the same file handle
-	sharedLogFile bool
 
 	// Control channels
 	stopChan    chan struct{}
 	restartChan chan struct{}
-	ctx         context.Context
 	cancel      context.CancelFunc
 
 	// Synchronization for stop
-	monitorDone       chan struct{}
-	stoppedExternally bool
-	stopMutex         sync.Mutex
+	monitorDone chan struct{}
 
 	// Callbacks
 	onStateChange    func(name string, prevState, newState State)
 	onDependencyStop func(name string)
+
+	lastError error
+	ctx       context.Context
+	state     State
+
+	stateMutex   sync.RWMutex
+	pid          int
+	exitCode     int
+	restartCount int
+	// sharedLogFile indicates if stdout and stderr share the same file handle
+	sharedLogFile     bool
+	stoppedExternally bool
+	stopMutex         sync.Mutex
 }
 
 // NewProcess creates a new process instance

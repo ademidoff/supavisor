@@ -250,8 +250,8 @@ func TestParseBytes(t *testing.T) {
 func TestParseEnvironmentVariables(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
 		expected map[string]string
+		input    string
 		wantErr  bool
 	}{
 		{
@@ -316,8 +316,8 @@ func TestParseEnvironmentVariables(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	tests := []struct {
-		name    string
 		config  *Config
+		name    string
 		wantErr bool
 	}{
 		{

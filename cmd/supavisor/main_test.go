@@ -15,8 +15,8 @@ import (
 func TestLoggerSetup(t *testing.T) {
 	tests := []struct {
 		name          string
-		isTTY         bool
 		logFilePath   string
+		isTTY         bool
 		expectStdout  bool
 		expectLogFile bool
 		expectDiscard bool
@@ -395,10 +395,10 @@ func TestParseLogLevel(t *testing.T) {
 func TestLogLevelIntegration(t *testing.T) {
 	tests := []struct {
 		name          string
-		logLevel      slog.Level
 		logFunc       func(*slog.Logger)
-		shouldAppear  bool
 		expectedInLog string
+		logLevel      slog.Level
+		shouldAppear  bool
 	}{
 		{
 			name:     "debug message with debug level",

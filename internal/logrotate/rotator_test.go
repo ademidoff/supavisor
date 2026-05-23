@@ -54,12 +54,12 @@ func TestRotator_GetBackupPath(t *testing.T) {
 	rotator := NewRotator("/var/log/test.log", 1024, 5, 0)
 
 	tests := []struct {
-		num      int
 		expected string
+		num      int
 	}{
-		{1, "/var/log/test.log.1"},
-		{2, "/var/log/test.log.2"},
-		{5, "/var/log/test.log.5"},
+		{"/var/log/test.log.1", 1},
+		{"/var/log/test.log.2", 2},
+		{"/var/log/test.log.5", 5},
 	}
 
 	for _, tt := range tests {

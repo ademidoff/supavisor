@@ -9,19 +9,19 @@ type Request struct {
 
 // Response represents a response from the daemon
 type Response struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
 	Data    interface{} `json:"data,omitempty"`
+	Message string      `json:"message,omitempty"`
+	Success bool        `json:"success"`
 }
 
 // ProcessStatus represents the status of a process
 type ProcessStatus struct {
 	Name         string `json:"name"`
 	State        string `json:"state"`
+	Uptime       string `json:"uptime"`
 	PID          int    `json:"pid"`
 	ExitCode     int    `json:"exit_code"`
 	RestartCount int    `json:"restart_count"`
-	Uptime       string `json:"uptime"`
 }
 
 // StatusResponse represents a status response
