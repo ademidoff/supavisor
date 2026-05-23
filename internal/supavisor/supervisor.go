@@ -15,6 +15,12 @@ import (
 	"github.com/ademidoff/supavisor/internal/process"
 )
 
+const (
+	dependencyTimeoutSeconds = 30
+	monitorInterval          = 5 * time.Second
+	pollInterval             = 100 * time.Millisecond
+)
+
 // ProcessStatusInfo contains status information about a process
 type ProcessStatusInfo struct {
 	Name         string
@@ -171,7 +177,7 @@ func (s *Supavisor) startAutostartProcesses() {
 				s.logger.Info("Process started successfully", "process", name)
 				// Give the process a moment to transition from STARTING to RUNNING
 				// This helps dependent processes that check immediately
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(pollInterval)
 			}
 		}
 	}
@@ -179,9 +185,9 @@ func (s *Supavisor) startAutostartProcesses() {
 
 // waitForSingleDependency waits for a single dependency to be running
 func (s *Supavisor) waitForSingleDependency(dep string) error {
-	// Wait up to 30 seconds for the dependency to be running
-	timeout := time.After(30 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Wait up to dependencyTimeoutSeconds for the dependency to be running
+	timeout := time.After(dependencyTimeoutSeconds * time.Second)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -212,7 +218,7 @@ func (s *Supavisor) waitForSingleDependency(dep string) error {
 }
 
 // StartProcess starts a specific process
-func (s *Supavisor) StartProcess(name string) error { //nolint:gocyclo
+func (s *Supavisor) StartProcess(name string) error {
 	progConfig, exists := s.config.Programs[name]
 	if !exists {
 		return fmt.Errorf("process %s not found", name)
@@ -283,7 +289,12 @@ func (s *Supavisor) StartProcess(name string) error { //nolint:gocyclo
 		}
 	}
 
-	// Create and start process
+	return s.createAndStartProcess(name, progConfig)
+}
+
+// createAndStartProcess creates, starts, and registers a new process instance.
+// Must be called with processMutex held.
+func (s *Supavisor) createAndStartProcess(name string, progConfig *config.ProgramConfig) error {
 	s.logger.Info("Creating process instance", "process", name)
 	proc := process.NewProcess(progConfig, s.processLogger)
 	proc.SetStateChangeCallback(s.onProcessStateChange)
@@ -334,7 +345,7 @@ func (s *Supavisor) RestartProcess(name string) error {
 		return err
 	}
 	s.logger.Info("Waiting 100ms before restarting", "process", name)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(pollInterval)
 	s.logger.Info("Starting after restart", "process", name)
 	return s.StartProcess(name)
 }
@@ -399,7 +410,7 @@ func (s *Supavisor) onDependencyStop(name string) {
 
 // monitorProcesses monitors all processes
 func (s *Supavisor) monitorProcesses() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(monitorInterval)
 	defer ticker.Stop()
 
 	for {

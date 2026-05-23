@@ -13,6 +13,11 @@ import (
 	"github.com/ademidoff/supavisor/pkg/api"
 )
 
+const (
+	tabPadding     = 3
+	requestTimeout = 5 * time.Second
+)
+
 func main() {
 	var socketPath string
 	flag.StringVar(&socketPath, "s", "/tmp/supavisor.sock", "Path to supavisor socket")
@@ -64,7 +69,7 @@ func printStatus(resp api.Response) {
 		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, tabPadding, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSTATE\tPID\tEXIT_CODE\tRESTARTS\tUPTIME")
 	fmt.Fprintln(w, "----\t-----\t---\t---------\t--------\t------")
 
@@ -130,7 +135,7 @@ func getInt(m map[string]any, key string) int {
 func sendRequest(socketPath, command string, args []string) (*api.Response, error) {
 	// Connect to supavisor with timeout
 	dialer := net.Dialer{
-		Timeout: 5 * time.Second,
+		Timeout: requestTimeout,
 	}
 	conn, err := dialer.Dial("unix", socketPath)
 	if err != nil {
@@ -140,7 +145,7 @@ func sendRequest(socketPath, command string, args []string) (*api.Response, erro
 
 	// Set read and write deadlines to prevent hanging
 	// Use a shorter timeout for faster failure when daemon is not responding
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(requestTimeout)
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
 	}

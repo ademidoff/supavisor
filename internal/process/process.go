@@ -14,6 +14,13 @@ import (
 	"github.com/ademidoff/supavisor/internal/logrotate"
 )
 
+const (
+	maxBackoffSeconds       = 30
+	gracefulShutdownTimeout = 5 * time.Second
+	logRotationInterval     = 5 * time.Second
+	restartWaitInterval     = 100 * time.Millisecond
+)
+
 // Process represents a managed process
 type Process struct {
 	config       *config.ProgramConfig
@@ -255,7 +262,7 @@ func (p *Process) Stop() error {
 		case <-p.monitorDone:
 			// Process exited gracefully, monitor has finished
 			p.logger.Info("Process exited gracefully")
-		case <-time.After(5 * time.Second):
+		case <-time.After(gracefulShutdownTimeout):
 			// Force kill
 			p.logger.Info("Graceful shutdown timeout, sending SIGKILL")
 			if err := p.cmd.Process.Kill(); err != nil {
@@ -286,7 +293,7 @@ func (p *Process) Restart() error {
 		return err
 	}
 	p.logger.Debug("Waiting 100ms before restart")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(restartWaitInterval)
 	return p.Start()
 }
 
@@ -373,7 +380,7 @@ func (p *Process) monitor() {
 					p.logger.Info("Restart attempt", "attempt", p.restartCount, "max_restarts", p.config.MaxRestarts)
 					// Wait before restarting (exponential backoff)
 					// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s... capped at 30s
-					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, 30*time.Second)
+					backoff := min(time.Duration(1<<uint(p.restartCount-1))*time.Second, maxBackoffSeconds*time.Second)
 					p.logger.Info("Waiting before restart", "backoff", backoff)
 					time.Sleep(backoff)
 
@@ -507,7 +514,7 @@ func (p *Process) setupLogFiles() error {
 
 // monitorLogRotation periodically checks and rotates logs
 func (p *Process) monitorLogRotation() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(logRotationInterval)
 	defer ticker.Stop()
 
 	for {

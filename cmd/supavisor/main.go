@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/ademidoff/supavisor/internal/config"
 	"github.com/ademidoff/supavisor/internal/supavisor"
-	"golang.org/x/term"
 )
 
 // parseLogLevel converts a string log level to slog.Level
@@ -68,14 +69,15 @@ func main() { //nolint:gocyclo,funlen
 	if logFilePath != "" {
 		// Ensure log directory exists
 		if dir := filepath.Dir(logFilePath); dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:govet
+			if err = os.MkdirAll(dir, 0o755); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: failed to create log directory: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
 		// Open log file for appending
-		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) //nolint:govet
+		var logFile *os.File
+		logFile, err = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to open log file: %v\n", err)
 			os.Exit(1)

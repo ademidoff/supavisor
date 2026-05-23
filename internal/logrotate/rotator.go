@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const rotatorCheckInterval = 5 * time.Second
+
 // Rotator handles log file rotation
 type Rotator struct {
 	filePath      string
@@ -26,7 +28,7 @@ func NewRotator(filePath string, maxBytes int64, backups int, maxAge int) *Rotat
 		maxBytes:      maxBytes,
 		backups:       backups,
 		maxAge:        maxAge,
-		checkInterval: 5 * time.Second, // Check every 5 seconds
+		checkInterval: rotatorCheckInterval,
 		lastCheck:     time.Now(),
 	}
 }

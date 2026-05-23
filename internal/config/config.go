@@ -19,6 +19,8 @@ const (
 	RestartUnexpected RestartPolicy = "unexpected"
 )
 
+const defaultLogFileMaxBytes = 50 * 1024 * 1024
+
 // SupavisorConfig represents the main supavisor configuration
 type SupavisorConfig struct {
 	LogFile   string
@@ -179,11 +181,11 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 
 	stdoutMaxBytes := parseBytes(raw.StdoutLogfileMaxBytes)
 	if stdoutMaxBytes == 0 {
-		stdoutMaxBytes = 50 * 1024 * 1024
+		stdoutMaxBytes = defaultLogFileMaxBytes
 	}
 	stderrMaxBytes := parseBytes(raw.StderrLogfileMaxBytes)
 	if stderrMaxBytes == 0 {
-		stderrMaxBytes = 50 * 1024 * 1024
+		stderrMaxBytes = defaultLogFileMaxBytes
 	}
 	stdoutBackups := raw.StdoutLogfileBackups
 	if stdoutBackups == 0 {

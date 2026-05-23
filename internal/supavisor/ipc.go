@@ -11,6 +11,8 @@ import (
 	"github.com/ademidoff/supavisor/pkg/api"
 )
 
+const msgProcessNameRequired = "process name required"
+
 // IPCServer handles communication with the CLI tool
 type IPCServer struct {
 	socketPath string
@@ -111,17 +113,17 @@ func (s *IPCServer) handleRequest(req *api.Request) *api.Response {
 		return s.handleStatus()
 	case "start":
 		if len(req.Args) == 0 {
-			return &api.Response{Success: false, Message: "process name required"}
+			return &api.Response{Success: false, Message: msgProcessNameRequired}
 		}
 		return s.handleStart(req.Args[0])
 	case "stop":
 		if len(req.Args) == 0 {
-			return &api.Response{Success: false, Message: "process name required"}
+			return &api.Response{Success: false, Message: msgProcessNameRequired}
 		}
 		return s.handleStop(req.Args[0])
 	case "restart":
 		if len(req.Args) == 0 {
-			return &api.Response{Success: false, Message: "process name required"}
+			return &api.Response{Success: false, Message: msgProcessNameRequired}
 		}
 		return s.handleRestart(req.Args[0])
 	case "reload":

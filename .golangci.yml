@@ -78,14 +78,12 @@ linters:
       locale: US
     mnd:
       ignored-numbers:
-        - "0644"
-        - "0755"
-        - "0666"
-        - "5"
+        - "0o644"
+        - "0o755"
+        - "0o666"
         - "10"
-        - "100"
+        - "60"
         - "1024"
-        - "50"
         - "2"
     revive:
       rules:
@@ -145,11 +143,11 @@ linters:
         text: Error return value of `.*\.(Signal|Kill)` is not checked
       - linters:
           - errcheck
-        path: internal/supervisord/
+        path: internal/supavisor/
         text: Error return value of `.*\.(Stop|Signal|FindProcess|StartProcess)` is not checked
       - linters:
           - revive
-        path: internal/supervisord/
+        path: internal/supavisor/
         text: Unhandled error in call to function
       - linters:
           - errorlint
@@ -182,6 +180,10 @@ linters:
       - path: (.+)\.go$
         text: Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*printf?|os\.(Un)?Setenv). is not checked
       - path: (.+)\.go$
+        linters:
+          - revive
+        text: 'Unhandled error in call to function (fmt\.|os\.(File\.Close|Remove(All)?)|text/tabwriter\.Writer\.Flush)'
+      - path: (.+)\.go$
         text: 'G104: Errors unhandled'
       - path: (.+)\.go$
         text: 'G107: Potential HTTP request made with variable url'
@@ -197,12 +199,6 @@ linters:
         text: 'G601: Implicit memory aliasing in for loop'
       - path: (.+)\.go$
         text: 'G306: Expect WriteFile permissions'
-      - path: (.+)\.go$
-        text: 'Magic number: .* in <argument> detected'
-      - path: (.+)\.go$
-        text: 'Magic number: .* in <operation> detected'
-      - path: (.+)\.go$
-        text: 'Magic number: .* in <condition> detected'
       - path: (.+)\.go$
         text: 'SA9003: empty branch'
       - path: (.+)\.go$
