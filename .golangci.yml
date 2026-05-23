@@ -6,7 +6,7 @@ output:
     text:
       path: stdout
       print-linter-name: true
-      print-issued-lines: false
+      print-issued-lines: true
 linters:
   default: none
   enable:

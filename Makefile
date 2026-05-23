@@ -45,7 +45,7 @@ format:
 	@echo "Formatting code with gofumpt..."
 	@go tool gofumpt -w .
 	@echo "Organizing imports with goimports..."
-	@go tool goimports -w .
+	@go tool goimports -local github.com/ademidoff/supavisor -w .
 	@echo "Formatting complete!"
 
 # Clean build artifacts

@@ -1,3 +1,4 @@
+//nolint:goconst
 package main
 
 import (
@@ -30,7 +31,7 @@ func parseLogLevel(level string) (slog.Level, error) {
 	}
 }
 
-func main() {
+func main() { //nolint:gocyclo,funlen
 	var configPath string
 	var logFilePath string
 

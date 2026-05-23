@@ -433,9 +433,9 @@ func (s *Supavisor) checkIfRunning() error {
 			var pid int
 			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
 				// Check if process is still running
-				if process, err := os.FindProcess(pid); err == nil {
+				if proc, err := os.FindProcess(pid); err == nil {
 					// Send signal 0 to check if process exists
-					if err := process.Signal(syscall.Signal(0)); err == nil {
+					if err := proc.Signal(syscall.Signal(0)); err == nil {
 						return fmt.Errorf("supavisor is already running (PID: %d)", pid)
 					}
 				}
