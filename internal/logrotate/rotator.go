@@ -90,7 +90,9 @@ func (r *Rotator) rotate() error {
 	if err != nil {
 		return fmt.Errorf("failed to create new log file: %w", err)
 	}
-	file.Close()
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close new log file: %w", err)
+	}
 
 	return nil
 }

@@ -94,7 +94,7 @@ func printStatus(resp api.Response) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", name, state, pidStr, exitCode, restarts, uptime)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 }
 
 func getString(m map[string]any, key string) string {

@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -155,7 +156,7 @@ func (p *Process) Start() error {
 
 	// Create command
 	p.logger.Debug("Creating command", "command_parts", parts)
-	p.cmd = exec.CommandContext(p.ctx, parts[0], parts[1:]...)
+	p.cmd = exec.CommandContext(p.ctx, parts[0], parts[1:]...) //nolint:gosec
 
 	// Set working directory
 	if p.config.Directory != "" {
@@ -256,7 +257,9 @@ func (p *Process) Stop() error {
 		// Check if process is still alive before signaling (it may have exited with parent's SIGTERM)
 		if err := p.cmd.Process.Signal(syscall.Signal(0)); err == nil {
 			p.logger.Info("Sending SIGINT for graceful shutdown")
-			_ = p.cmd.Process.Signal(os.Interrupt)
+			if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
+				p.logger.Warn("Failed to send SIGINT", "error", err)
+			}
 		}
 
 		// Wait for graceful shutdown with timeout
@@ -300,7 +303,7 @@ func (p *Process) Restart() error {
 }
 
 // monitor monitors the process and handles restarts
-func (p *Process) monitor() {
+func (p *Process) monitor() { //nolint:gocyclo
 	defer close(p.monitorDone)
 
 	done := make(chan error, 1)
@@ -315,7 +318,8 @@ func (p *Process) monitor() {
 			p.exitCode = p.cmd.ProcessState.ExitCode()
 		} else if err != nil {
 			// Try to extract exit code from error
-			if exitError, ok := err.(*exec.ExitError); ok {
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
 				if status, ok := exitError.Sys().(syscall.WaitStatus); ok {
 					p.exitCode = status.ExitStatus()
 				} else {
@@ -412,7 +416,7 @@ func (p *Process) monitor() {
 }
 
 // setupLogFiles sets up log file rotation
-func (p *Process) setupLogFiles() error {
+func (p *Process) setupLogFiles() error { //nolint:gocyclo
 	// Check if stdout and stderr point to the same file
 	stdoutPath := p.config.StdoutLogfile
 	stderrPath := p.config.StderrLogfile
@@ -553,18 +557,24 @@ func (p *Process) closeLogFiles() {
 	if p.sharedLogFile {
 		// Only close once since both stdout and stderr share the same file handle
 		if p.stdoutFile != nil {
-			p.stdoutFile.Close()
+			if err := p.stdoutFile.Close(); err != nil {
+				p.logger.Warn("failed to close stdout log file", "error", err)
+			}
 			p.stdoutFile = nil
 			p.stderrFile = nil // Clear the reference but don't close again
 		}
 	} else {
 		// Close both files separately
 		if p.stdoutFile != nil {
-			p.stdoutFile.Close()
+			if err := p.stdoutFile.Close(); err != nil {
+				p.logger.Warn("failed to close stdout log file", "error", err)
+			}
 			p.stdoutFile = nil
 		}
 		if p.stderrFile != nil && p.stderrFile != p.stdoutFile {
-			p.stderrFile.Close()
+			if err := p.stderrFile.Close(); err != nil {
+				p.logger.Warn("failed to close stderr log file", "error", err)
+			}
 			p.stderrFile = nil
 		}
 	}

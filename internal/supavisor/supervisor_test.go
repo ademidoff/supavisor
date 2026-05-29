@@ -17,7 +17,7 @@ func TestStopProcess_DoesNotStopDependents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 	socketPath := filepath.Join(tmpDir, "s.sock")
 	pidPath := filepath.Join(tmpDir, "supavisor.pid")
 	logDir := filepath.Join(tmpDir, "logs")

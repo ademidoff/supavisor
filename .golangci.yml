@@ -112,6 +112,9 @@ linters:
           severity: warning
         - name: unhandled-error
           severity: warning
+          arguments:
+            - "fmt\\.Print.*"
+            - "fmt\\.Fprint.*"
         - name: errorf
           severity: warning
     staticcheck:
@@ -139,64 +142,10 @@ linters:
           - gosec
         path: cmd/
       - linters:
-          - errcheck
-        path: internal/process/process.go
-        text: Error return value of `.*\.(Signal|Kill)` is not checked
-      - linters:
-          - errcheck
-        path: internal/supavisor/
-        text: Error return value of `.*\.(Stop|Signal|FindProcess|StartProcess)` is not checked
-      - linters:
-          - errorlint
-        path: internal/process/process.go
-        text: type assertion on error will fail on wrapped errors
-      - linters:
-          - gosec
-        path: internal/process/process.go
-        text: Subprocess launched with a potential tainted input
-      - linters:
-          - gocyclo
-        path: internal/process/process.go
-        text: cyclomatic complexity.*is high
-      - linters:
-          - gocyclo
-        path: internal/dependency/graph.go
-        text: cyclomatic complexity.*is high
-      - linters:
-          - dupl
-        path: internal/process/process.go
-        text: lines are duplicate
-      # - linters:
-      #     - gocritic
-      #   path: cmd/
-      #   text: exitAfterDefer
-      - linters:
           - govet
         path: .*_test\.go
         text: 'shadow: declaration.*shadows'
-      - path: (.+)\.go$
-        text: Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*printf?|os\.(Un)?Setenv). is not checked
-      - path: (.+)\.go$
-        linters:
-          - revive
-        text: 'Unhandled error in call to function (fmt\.|os\.(File\.Close|Remove(All)?)|text/tabwriter\.Writer\.Flush)'
-      - path: (.+)\.go$
-        text: 'G104: Errors unhandled'
-      - path: (.+)\.go$
-        text: 'G107: Potential HTTP request made with variable url'
-      - path: (.+)\.go$
-        text: 'G402: TLS InsecureSkipVerify set true'
-      - path: (.+)\.go$
-        text: 'G404: Use of weak random number generator'
-      - path: (.+)\.go$
-        text: 'G501: Blacklisted import crypto/md5: weak cryptographic primitive'
-      - path: (.+)\.go$
-        text: 'G505: Blacklisted import crypto/sha1: weak cryptographic primitive'
-      - path: (.+)\.go$
-        text: 'G601: Implicit memory aliasing in for loop'
     paths:
-      - .*\.pb\.go$
-      - .*\.gen\.go$
       - bin
       - vendor
       - third_party$

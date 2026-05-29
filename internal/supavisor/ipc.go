@@ -194,8 +194,12 @@ func (s *IPCServer) handleShutdown() *api.Response {
 	go func() {
 		// Send SIGTERM to ourselves
 		pid := os.Getpid()
-		proc, _ := os.FindProcess(pid)
-		err := proc.Signal(syscall.SIGTERM)
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			slog.Error("failed to find process", "pid", pid, "error", err)
+			return
+		}
+		err = proc.Signal(syscall.SIGTERM)
 		if err != nil {
 			slog.Error("failed to send SIGTERM", "error", err)
 		}

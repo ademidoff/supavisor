@@ -130,7 +130,9 @@ func (s *Supavisor) Stop() error {
 	processCount := len(s.processes)
 	s.logger.Info("Stopping processes...", "count", processCount)
 	for _, proc := range s.processes {
-		_ = proc.Stop()
+		if err := proc.Stop(); err != nil {
+			s.logger.Warn("failed to stop process", "error", err)
+		}
 	}
 	s.processMutex.Unlock()
 
@@ -222,7 +224,7 @@ func (s *Supavisor) waitForSingleDependency(dep string) error {
 }
 
 // StartProcess starts a specific process
-func (s *Supavisor) StartProcess(name string) error {
+func (s *Supavisor) StartProcess(name string) error { //nolint:gocyclo
 	progConfig, exists := s.config.Programs[name]
 	if !exists {
 		return fmt.Errorf("process %s not found", name)
@@ -243,7 +245,9 @@ func (s *Supavisor) StartProcess(name string) error {
 		}
 		// Stop existing process if needed
 		s.logger.Info("Stopping existing process before restart", "process", name)
-		proc.Stop()
+		if err := proc.Stop(); err != nil {
+			s.logger.Warn("failed to stop existing process", "process", name, "error", err)
+		}
 	}
 
 	// Check dependencies and wait for them to be running if they're starting
@@ -497,7 +501,9 @@ func (s *Supavisor) writePIDFile() error {
 // removePIDFile removes the PID file
 func (s *Supavisor) removePIDFile() {
 	if s.config.Supavisor.PidFile != "" {
-		os.Remove(s.config.Supavisor.PidFile)
+		if err := os.Remove(s.config.Supavisor.PidFile); err != nil {
+			s.logger.Warn("failed to remove PID file", "error", err)
+		}
 	}
 }
 
