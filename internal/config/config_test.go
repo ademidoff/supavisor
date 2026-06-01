@@ -3,7 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/ademidoff/supavisor/internal/dependency"
 )
 
 func TestParseConfigFile(t *testing.T) {
@@ -311,6 +315,375 @@ func TestParseEnvironmentVariables(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseConfig_NoFragmentDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+
+	main := `supavisor:
+  pidfile: /tmp/sv.pid
+programs:
+  app1:
+    command: /bin/true
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+
+	cfg, err := ParseConfig(mainPath)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if _, ok := cfg.Programs["app1"]; !ok {
+		t.Fatal("expected program app1 to be loaded")
+	}
+	if len(cfg.Programs) != 1 {
+		t.Errorf("expected 1 program, got %d", len(cfg.Programs))
+	}
+}
+
+func TestParseConfig_MergesFragments(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+	fragDir := filepath.Join(tmpDir, "supavisor.d")
+	if err := os.MkdirAll(fragDir, 0o755); err != nil {
+		t.Fatalf("mkdir fragments: %v", err)
+	}
+
+	main := `supavisor:
+  pidfile: /tmp/sv.pid
+programs:
+  base:
+    command: /bin/true
+`
+	frag1 := `programs:
+  extra1:
+    command: /bin/sleep 1
+    depends_on:
+      - base
+`
+	frag2 := `programs:
+  extra2:
+    command: /bin/sleep 2
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fragDir, "10-a.yml"), []byte(frag1), 0o644); err != nil {
+		t.Fatalf("write frag1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fragDir, "20-b.yaml"), []byte(frag2), 0o644); err != nil {
+		t.Fatalf("write frag2: %v", err)
+	}
+	// non-yaml files must be ignored
+	if err := os.WriteFile(filepath.Join(fragDir, "notes.txt"), []byte("ignore me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	cfg, err := ParseConfig(mainPath)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	for _, name := range []string{"base", "extra1", "extra2"} {
+		if _, ok := cfg.Programs[name]; !ok {
+			t.Errorf("expected program %s in merged config", name)
+		}
+	}
+	if cfg.Supavisor.PidFile != "/tmp/sv.pid" {
+		t.Errorf("expected pidfile from main file, got %s", cfg.Supavisor.PidFile)
+	}
+	if got := cfg.Programs["extra1"].DependsOn; len(got) != 1 || got[0] != "base" {
+		t.Errorf("expected extra1 depends_on=[base], got %v", got)
+	}
+}
+
+func TestParseConfig_DuplicateProgramAcrossFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+	fragDir := filepath.Join(tmpDir, "supavisor.d")
+	if err := os.MkdirAll(fragDir, 0o755); err != nil {
+		t.Fatalf("mkdir fragments: %v", err)
+	}
+
+	main := `programs:
+  shared:
+    command: /bin/true
+`
+	frag := `programs:
+  shared:
+    command: /bin/false
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	fragPath := filepath.Join(fragDir, "10-dup.yml")
+	if err := os.WriteFile(fragPath, []byte(frag), 0o644); err != nil {
+		t.Fatalf("write frag: %v", err)
+	}
+
+	_, err := ParseConfig(mainPath)
+	if err == nil {
+		t.Fatal("expected duplicate program error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "duplicate program shared") {
+		t.Errorf("error should mention duplicate program: %s", msg)
+	}
+	if !strings.Contains(msg, mainPath) || !strings.Contains(msg, fragPath) {
+		t.Errorf("error should reference both source files; got: %s", msg)
+	}
+}
+
+func TestParseConfig_DuplicateProgramAcrossFragments(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+	fragDir := filepath.Join(tmpDir, "supavisor.d")
+	if err := os.MkdirAll(fragDir, 0o755); err != nil {
+		t.Fatalf("mkdir fragments: %v", err)
+	}
+
+	main := `programs:
+  base:
+    command: /bin/true
+`
+	frag1 := `programs:
+  twin:
+    command: /bin/sleep 1
+`
+	frag2 := `programs:
+  twin:
+    command: /bin/sleep 2
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	frag1Path := filepath.Join(fragDir, "10-a.yml")
+	frag2Path := filepath.Join(fragDir, "20-b.yml")
+	if err := os.WriteFile(frag1Path, []byte(frag1), 0o644); err != nil {
+		t.Fatalf("write frag1: %v", err)
+	}
+	if err := os.WriteFile(frag2Path, []byte(frag2), 0o644); err != nil {
+		t.Fatalf("write frag2: %v", err)
+	}
+
+	_, err := ParseConfig(mainPath)
+	if err == nil {
+		t.Fatal("expected duplicate program error across fragments")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, frag1Path) || !strings.Contains(msg, frag2Path) {
+		t.Errorf("error should reference both fragment files; got: %s", msg)
+	}
+}
+
+func TestParseConfig_FragmentWithSupavisorSectionIsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+	fragDir := filepath.Join(tmpDir, "supavisor.d")
+	if err := os.MkdirAll(fragDir, 0o755); err != nil {
+		t.Fatalf("mkdir fragments: %v", err)
+	}
+
+	main := `programs:
+  base:
+    command: /bin/true
+`
+	frag := `supavisor:
+  pidfile: /tmp/other.pid
+programs:
+  extra:
+    command: /bin/true
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fragDir, "10.yml"), []byte(frag), 0o644); err != nil {
+		t.Fatalf("write frag: %v", err)
+	}
+
+	_, err := ParseConfig(mainPath)
+	if err == nil {
+		t.Fatal("expected error when fragment defines a supavisor section")
+	}
+	if !strings.Contains(err.Error(), "must not define a supavisor section") {
+		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
+// TestParseConfig_MultifileFixture loads the checked-in testdata fixture and
+// verifies that dependencies declared across multiple files resolve into a
+// single valid topological order.
+func TestParseConfig_MultifileFixture(t *testing.T) {
+	mainPath := filepath.Join("testdata", "multifile", "supavisor.yml")
+
+	cfg, err := ParseConfig(mainPath)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+
+	expected := []string{"database", "cache", "webapp", "worker"}
+	for _, name := range expected {
+		if _, ok := cfg.Programs[name]; !ok {
+			t.Errorf("expected program %s in merged config", name)
+		}
+	}
+	if len(cfg.Programs) != len(expected) {
+		t.Errorf("expected %d programs, got %d", len(expected), len(cfg.Programs))
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate failed on merged multi-file config: %v", err)
+	}
+
+	g := dependency.NewGraph()
+	for name, prog := range cfg.Programs {
+		g.AddNode(name, prog.DependsOn)
+	}
+	order, err := g.TopologicalSort()
+	if err != nil {
+		t.Fatalf("TopologicalSort failed: %v", err)
+	}
+
+	pos := make(map[string]int, len(order))
+	for i, n := range order {
+		pos[n] = i
+	}
+	mustPrecede := [][2]string{
+		{"database", "cache"},
+		{"database", "webapp"},
+		{"cache", "webapp"},
+		{"cache", "worker"},
+	}
+	for _, pair := range mustPrecede {
+		before, after := pair[0], pair[1]
+		if pos[before] >= pos[after] {
+			t.Errorf("expected %s to come before %s in order %v", before, after, order)
+		}
+	}
+}
+
+// TestParseConfig_MissingDependencyAcrossFiles verifies that a missing
+// dependency is still caught by Validate when the dependee is in no file.
+func TestParseConfig_MissingDependencyAcrossFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+	fragDir := filepath.Join(tmpDir, "supavisor.d")
+	if err := os.MkdirAll(fragDir, 0o755); err != nil {
+		t.Fatalf("mkdir fragments: %v", err)
+	}
+
+	main := `programs:
+  app:
+    command: /bin/true
+    depends_on:
+      - ghost
+`
+	frag := `programs:
+  sidecar:
+    command: /bin/true
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fragDir, "10.yml"), []byte(frag), 0o644); err != nil {
+		t.Fatalf("write frag: %v", err)
+	}
+
+	cfg, err := ParseConfig(mainPath)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected Validate to fail on missing cross-file dependency")
+	}
+}
+
+// TestParseConfig_CircularDependencyAcrossFiles verifies a cycle that spans
+// files is caught.
+func TestParseConfig_CircularDependencyAcrossFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainPath := filepath.Join(tmpDir, "supavisor.yml")
+	fragDir := filepath.Join(tmpDir, "supavisor.d")
+	if err := os.MkdirAll(fragDir, 0o755); err != nil {
+		t.Fatalf("mkdir fragments: %v", err)
+	}
+
+	main := `programs:
+  a:
+    command: /bin/true
+    depends_on:
+      - b
+`
+	frag := `programs:
+  b:
+    command: /bin/true
+    depends_on:
+      - a
+`
+	if err := os.WriteFile(mainPath, []byte(main), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fragDir, "10.yml"), []byte(frag), 0o644); err != nil {
+		t.Fatalf("write frag: %v", err)
+	}
+
+	cfg, err := ParseConfig(mainPath)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected Validate to detect circular dependency across files")
+	}
+}
+
+// TestFragmentDir verifies the sibling drop-in directory resolution.
+func TestFragmentDir(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/etc/supavisor/supavisor.yml", "/etc/supavisor/supavisor.d"},
+		{"./supavisor.yaml", "supavisor.d"},
+		{"/tmp/custom.yml", "/tmp/custom.d"},
+	}
+	for _, c := range cases {
+		got := fragmentDir(c.in)
+		if got != c.want {
+			t.Errorf("fragmentDir(%s) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+// TestListFragmentFiles_OrderingAndFiltering verifies lexical ordering and that
+// non-yaml entries and subdirectories are skipped.
+func TestListFragmentFiles_OrderingAndFiltering(t *testing.T) {
+	dir := t.TempDir()
+	names := []string{"20-b.yml", "10-a.yaml", "30-c.yml", "skip.txt"}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("programs: {}\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	got, err := listFragmentFiles(dir)
+	if err != nil {
+		t.Fatalf("listFragmentFiles: %v", err)
+	}
+	wantBases := []string{"10-a.yaml", "20-b.yml", "30-c.yml"}
+	if len(got) != len(wantBases) {
+		t.Fatalf("expected %d files, got %d (%v)", len(wantBases), len(got), got)
+	}
+	for i, p := range got {
+		if filepath.Base(p) != wantBases[i] {
+			t.Errorf("position %d: got %s, want %s", i, filepath.Base(p), wantBases[i])
+		}
+	}
+	if slices.Contains(got, filepath.Join(dir, "skip.txt")) {
+		t.Error("non-yaml file should not be included")
 	}
 }
 

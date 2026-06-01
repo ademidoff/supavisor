@@ -1,0 +1,10 @@
+supavisor:
+  pidfile: /tmp/supavisor.pid
+  socket: /tmp/supavisor.sock
+  log_level: info
+
+programs:
+  database:
+    command: /usr/bin/postgres
+    autostart: true
+    autorestart: unexpected

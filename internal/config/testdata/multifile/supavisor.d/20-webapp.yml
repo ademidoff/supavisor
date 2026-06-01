@@ -1,0 +1,14 @@
+programs:
+  webapp:
+    command: /usr/bin/python app.py
+    autostart: true
+    autorestart: always
+    depends_on:
+      - database
+      - cache
+  worker:
+    command: /usr/bin/worker
+    autostart: true
+    autorestart: always
+    depends_on:
+      - cache

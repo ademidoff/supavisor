@@ -1,0 +1,7 @@
+programs:
+  cache:
+    command: /usr/bin/redis-server
+    autostart: true
+    autorestart: always
+    depends_on:
+      - database

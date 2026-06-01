@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -94,16 +96,12 @@ type programFile struct {
 	StderrLogfileMaxAge   int               `yaml:"stderr_logfile_maxage"`
 }
 
-// ParseConfigFile parses a YAML configuration file
+// ParseConfigFile parses a single YAML configuration file. It does not look for
+// fragment files. Use ParseConfig for the full main-file + supavisor.d/ behavior.
 func ParseConfigFile(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	cfg, err := parseConfigFileRaw(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	var cfg configFile
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, err
 	}
 
 	config := &Config{
@@ -117,18 +115,125 @@ func ParseConfigFile(path string) (*Config, error) {
 		Programs: make(map[string]*ProgramConfig),
 	}
 
-	for name, prog := range cfg.Programs {
-		if prog == nil {
-			continue
-		}
-		programConfig, err := convertProgram(name, prog)
-		if err != nil {
-			return nil, fmt.Errorf("program %s: %w", name, err)
-		}
-		config.Programs[name] = programConfig
+	if err := mergePrograms(config.Programs, cfg.Programs, path, map[string]string{}); err != nil {
+		return nil, err
 	}
 
 	return config, nil
+}
+
+// ParseConfig parses the main config file and merges any fragment files found
+// in the sibling directory <basename-no-ext>.d/ (e.g. /etc/supavisor/supavisor.yml
+// -> /etc/supavisor/supavisor.d/). Fragments are loaded in lexical order and may
+// only define the programs section. Duplicate program names across files are a
+// hard error.
+func ParseConfig(mainPath string) (*Config, error) {
+	cfg, err := ParseConfigFile(mainPath)
+	if err != nil {
+		return nil, err
+	}
+
+	dropDir := fragmentDir(mainPath)
+	fragments, err := listFragmentFiles(dropDir)
+	if err != nil {
+		return nil, err
+	}
+
+	origins := make(map[string]string, len(cfg.Programs))
+	for name := range cfg.Programs {
+		origins[name] = mainPath
+	}
+
+	for _, fragPath := range fragments {
+		frag, err := parseConfigFileRaw(fragPath)
+		if err != nil {
+			return nil, err
+		}
+		if !isSupavisorSectionEmpty(&frag.Supavisor) {
+			return nil, fmt.Errorf("fragment %s: must not define a supavisor section; daemon settings belong in the main config file", fragPath)
+		}
+		if err := mergePrograms(cfg.Programs, frag.Programs, fragPath, origins); err != nil {
+			return nil, err
+		}
+	}
+
+	return cfg, nil
+}
+
+// fragmentDir returns the sibling drop-in directory for a given main config path.
+// For /etc/supavisor/supavisor.yml it returns /etc/supavisor/supavisor.d.
+func fragmentDir(mainPath string) string {
+	dir := filepath.Dir(mainPath)
+	base := filepath.Base(mainPath)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	return filepath.Join(dir, stem+".d")
+}
+
+// listFragmentFiles returns *.yml and *.yaml files in dir sorted lexically.
+// A missing directory is not an error.
+func listFragmentFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read fragment directory %s: %w", dir, err)
+	}
+
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext != ".yml" && ext != ".yaml" {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, e.Name()))
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func parseConfigFileRaw(path string) (*configFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
+	}
+
+	var cfg configFile
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	}
+	return &cfg, nil
+}
+
+func isSupavisorSectionEmpty(s *supavisorFile) bool {
+	return *s == (supavisorFile{})
+}
+
+// mergePrograms converts and merges raw program entries into dst. origins tracks
+// which file each program was first defined in so duplicate errors can name both
+// sources. A nil origins map disables tracking (single-file callers).
+func mergePrograms(dst map[string]*ProgramConfig, src map[string]*programFile, srcPath string, origins map[string]string) error {
+	for name, prog := range src {
+		if prog == nil {
+			continue
+		}
+		if existingPath, exists := origins[name]; exists {
+			return fmt.Errorf("duplicate program %s: defined in %s and %s", name, existingPath, srcPath)
+		}
+		programConfig, err := convertProgram(name, prog)
+		if err != nil {
+			return fmt.Errorf("program %s (%s): %w", name, srcPath, err)
+		}
+		dst[name] = programConfig
+		if origins != nil {
+			origins[name] = srcPath
+		}
+	}
+	return nil
 }
 
 func defaultString(s, def string) string {

@@ -133,6 +133,23 @@ Commands:
 
 ## Configuration
 
+### Multi-file configuration
+
+In addition to the main config file passed via `-c`, supavisor will look for a
+sibling drop-in directory named after the main file. For
+`/etc/supavisor/supavisor.yml` the directory is `/etc/supavisor/supavisor.d/`.
+
+- Every `*.yml` and `*.yaml` file in the drop-in directory is loaded in lexical
+  order and merged with the main file.
+- Fragment files may only define the `programs:` section. A `supavisor:` section
+  in a fragment is rejected; daemon-level settings must live in the main file.
+- A program name defined in two files is a hard error — supavisor refuses to
+  start and names both source files.
+- `depends_on` can reference programs defined in any file; dependencies are
+  resolved across the merged program set.
+
+If the drop-in directory does not exist, supavisor simply loads the main file.
+
 ### supavisor section
 
 - `logfile`: Path to supavisor's own log file (optional)

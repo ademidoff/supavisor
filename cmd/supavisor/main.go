@@ -46,8 +46,8 @@ func main() { //nolint:gocyclo,funlen
 		os.Exit(1)
 	}
 
-	// Parse configuration
-	cfg, err := config.ParseConfigFile(configPath)
+	// Parse configuration (loads supavisor.yml and any sibling supavisor.d/*.yml fragments)
+	cfg, err := config.ParseConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to parse configuration: %v\n", err)
 		os.Exit(1)
