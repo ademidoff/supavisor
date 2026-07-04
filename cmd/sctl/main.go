@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/ademidoff/supavisor/pkg/api"
+	"github.com/ademidoff/supavisor/internal/api"
 )
 
 const (
@@ -63,7 +63,7 @@ func printStatus(resp api.Response) {
 		return
 	}
 
-	processesData, ok := data["processes"].([]interface{})
+	processesData, ok := data["processes"].([]any)
 	if !ok {
 		fmt.Println(resp.Message)
 		return
@@ -74,7 +74,7 @@ func printStatus(resp api.Response) {
 	fmt.Fprintln(w, "----\t-----\t---\t---------\t--------\t------")
 
 	for _, p := range processesData {
-		procMap, ok := p.(map[string]interface{})
+		procMap, ok := p.(map[string]any)
 		if !ok {
 			continue
 		}

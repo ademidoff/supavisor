@@ -286,7 +286,7 @@ programs:
 - `internal/dependency`: Dependency resolution engine
 - `internal/logrotate`: Log rotation and retention
 - `internal/server`: Core supavisor daemon
-- `pkg/api`: Public API types for IPC communication
+- `internal/api`: API types for IPC communication
 
 ## License
 

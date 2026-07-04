@@ -8,7 +8,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/ademidoff/supavisor/pkg/api"
+	"github.com/ademidoff/supavisor/internal/api"
 )
 
 const msgProcessNameRequired = "process name required"
