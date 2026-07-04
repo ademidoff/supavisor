@@ -1,4 +1,4 @@
-package supavisor
+package server
 
 import (
 	"encoding/json"
@@ -16,16 +16,16 @@ const msgProcessNameRequired = "process name required"
 // IPCServer handles communication with the CLI tool
 type IPCServer struct {
 	listener   net.Listener
-	supavisor  *Supavisor
+	server     *Server
 	stopChan   chan struct{}
 	socketPath string
 }
 
 // NewIPCServer creates a new IPC server
-func NewIPCServer(socketPath string, supavisor *Supavisor) *IPCServer {
+func NewIPCServer(socketPath string, server *Server) *IPCServer {
 	return &IPCServer{
 		socketPath: socketPath,
-		supavisor:  supavisor,
+		server:     server,
 		stopChan:   make(chan struct{}),
 	}
 }
@@ -137,7 +137,7 @@ func (s *IPCServer) handleRequest(req *api.Request) *api.Response {
 
 // handleStatus returns the status of all processes
 func (s *IPCServer) handleStatus() *api.Response {
-	statuses := s.supavisor.GetStatus()
+	statuses := s.server.GetStatus()
 	processStatuses := make([]api.ProcessStatus, 0, len(statuses))
 
 	for _, status := range statuses {
@@ -153,13 +153,13 @@ func (s *IPCServer) handleStatus() *api.Response {
 
 	return &api.Response{
 		Success: true,
-		Data:    map[string]interface{}{"processes": processStatuses},
+		Data:    map[string]any{"processes": processStatuses},
 	}
 }
 
 // handleStart starts a process
 func (s *IPCServer) handleStart(name string) *api.Response {
-	if err := s.supavisor.StartProcess(name); err != nil {
+	if err := s.server.StartProcess(name); err != nil {
 		return &api.Response{Success: false, Message: err.Error()}
 	}
 	return &api.Response{Success: true, Message: fmt.Sprintf("process %s started", name)}
@@ -167,7 +167,7 @@ func (s *IPCServer) handleStart(name string) *api.Response {
 
 // handleStop stops a process
 func (s *IPCServer) handleStop(name string) *api.Response {
-	if err := s.supavisor.StopProcess(name); err != nil {
+	if err := s.server.StopProcess(name); err != nil {
 		return &api.Response{Success: false, Message: err.Error()}
 	}
 	return &api.Response{Success: true, Message: fmt.Sprintf("process %s stopped", name)}
@@ -175,7 +175,7 @@ func (s *IPCServer) handleStop(name string) *api.Response {
 
 // handleRestart restarts a process
 func (s *IPCServer) handleRestart(name string) *api.Response {
-	if err := s.supavisor.RestartProcess(name); err != nil {
+	if err := s.server.RestartProcess(name); err != nil {
 		return &api.Response{Success: false, Message: err.Error()}
 	}
 	return &api.Response{Success: true, Message: fmt.Sprintf("process %s restarted", name)}
@@ -183,7 +183,7 @@ func (s *IPCServer) handleRestart(name string) *api.Response {
 
 // handleReload reloads the configuration
 func (s *IPCServer) handleReload() *api.Response {
-	if err := s.supavisor.Reload(); err != nil {
+	if err := s.server.Reload(); err != nil {
 		return &api.Response{Success: false, Message: err.Error()}
 	}
 	return &api.Response{Success: true, Message: "configuration reloaded"}

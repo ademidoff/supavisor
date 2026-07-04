@@ -1,4 +1,4 @@
-package supavisor
+package server
 
 import (
 	"log/slog"
@@ -61,9 +61,9 @@ func TestStopProcess_DoesNotStopDependents(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	sv, err := NewSupavisor(cfg, logger)
+	sv, err := New(cfg, logger)
 	if err != nil {
-		t.Fatalf("NewSupavisor failed: %v", err)
+		t.Fatalf("New failed: %v", err)
 	}
 
 	if err := sv.Start(); err != nil {

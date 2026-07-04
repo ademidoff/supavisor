@@ -1,4 +1,4 @@
-package supavisor
+package server
 
 import (
 	"fmt"
@@ -31,8 +31,8 @@ type ProcessStatusInfo struct {
 	RestartCount int
 }
 
-// Supavisor manages all processes
-type Supavisor struct {
+// Server manages all processes
+type Server struct {
 	config          *config.Config
 	logger          *slog.Logger
 	processLogger   *slog.Logger
@@ -44,8 +44,8 @@ type Supavisor struct {
 	running         bool
 }
 
-// NewSupavisor creates a new supavisor instance
-func NewSupavisor(cfg *config.Config, logger *slog.Logger) (*Supavisor, error) {
+// New creates a new server instance
+func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -65,7 +65,7 @@ func NewSupavisor(cfg *config.Config, logger *slog.Logger) (*Supavisor, error) {
 		return nil, fmt.Errorf("dependency graph validation failed: %w", err)
 	}
 
-	return &Supavisor{
+	return &Server{
 		config:          cfg,
 		logger:          logger.With("component", "main"),
 		processLogger:   logger,
@@ -76,7 +76,7 @@ func NewSupavisor(cfg *config.Config, logger *slog.Logger) (*Supavisor, error) {
 }
 
 // Start starts the supavisor
-func (s *Supavisor) Start() error {
+func (s *Server) Start() error {
 	if s.running {
 		return fmt.Errorf("supavisor is already running")
 	}
@@ -116,7 +116,7 @@ func (s *Supavisor) Start() error {
 }
 
 // Stop stops the supavisor and all processes
-func (s *Supavisor) Stop() error {
+func (s *Server) Stop() error {
 	if !s.running {
 		return nil
 	}
@@ -152,7 +152,7 @@ func (s *Supavisor) Stop() error {
 }
 
 // startAutostartProcesses starts all processes configured to autostart
-func (s *Supavisor) startAutostartProcesses() {
+func (s *Server) startAutostartProcesses() {
 	// Get topological sort order
 	order, err := s.dependencyGraph.TopologicalSort()
 	if err != nil {
@@ -190,7 +190,7 @@ func (s *Supavisor) startAutostartProcesses() {
 }
 
 // waitForSingleDependency waits for a single dependency to be running
-func (s *Supavisor) waitForSingleDependency(dep string) error {
+func (s *Server) waitForSingleDependency(dep string) error {
 	// Wait up to dependencyTimeoutSeconds for the dependency to be running
 	timeout := time.After(dependencyTimeoutSeconds * time.Second)
 	ticker := time.NewTicker(pollInterval)
@@ -224,7 +224,7 @@ func (s *Supavisor) waitForSingleDependency(dep string) error {
 }
 
 // StartProcess starts a specific process
-func (s *Supavisor) StartProcess(name string) error { //nolint:gocyclo
+func (s *Server) StartProcess(name string) error { //nolint:gocyclo
 	progConfig, exists := s.config.Programs[name]
 	if !exists {
 		return fmt.Errorf("process %s not found", name)
@@ -302,7 +302,7 @@ func (s *Supavisor) StartProcess(name string) error { //nolint:gocyclo
 
 // createAndStartProcess creates, starts, and registers a new process instance.
 // Must be called with processMutex held.
-func (s *Supavisor) createAndStartProcess(name string, progConfig *config.ProgramConfig) error {
+func (s *Server) createAndStartProcess(name string, progConfig *config.ProgramConfig) error {
 	s.logger.Info("Creating process instance", "process", name)
 	proc := process.NewProcess(progConfig, s.processLogger)
 	proc.SetStateChangeCallback(s.onProcessStateChange)
@@ -320,7 +320,7 @@ func (s *Supavisor) createAndStartProcess(name string, progConfig *config.Progra
 }
 
 // StopProcess stops a specific process
-func (s *Supavisor) StopProcess(name string) error {
+func (s *Server) StopProcess(name string) error {
 	s.logger.Info("Stopping process", "process", name)
 
 	s.processMutex.Lock()
@@ -346,7 +346,7 @@ func (s *Supavisor) StopProcess(name string) error {
 }
 
 // RestartProcess restarts a specific process
-func (s *Supavisor) RestartProcess(name string) error {
+func (s *Server) RestartProcess(name string) error {
 	s.logger.Info("Restarting process", "process", name)
 	if err := s.StopProcess(name); err != nil {
 		s.logger.Error("Error stopping process during restart", "process", name, "error", err)
@@ -359,14 +359,14 @@ func (s *Supavisor) RestartProcess(name string) error {
 }
 
 // Reload reloads the configuration
-func (s *Supavisor) Reload() error {
+func (s *Server) Reload() error {
 	// For now, just validate the current config
 	// Full reload would require stopping and restarting processes
 	return s.config.Validate()
 }
 
 // GetStatus returns the status of all processes
-func (s *Supavisor) GetStatus() []ProcessStatusInfo {
+func (s *Server) GetStatus() []ProcessStatusInfo {
 	s.processMutex.RLock()
 	defer s.processMutex.RUnlock()
 
@@ -405,19 +405,19 @@ func (s *Supavisor) GetStatus() []ProcessStatusInfo {
 }
 
 // onProcessStateChange is called when a process state changes
-func (s *Supavisor) onProcessStateChange(name string, prevState, newState process.State) {
+func (s *Server) onProcessStateChange(name string, prevState, newState process.State) {
 	if prevState != newState {
 		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
 }
 
 // onDependencyStop is called when a dependency stops
-func (s *Supavisor) onDependencyStop(name string) {
+func (s *Server) onDependencyStop(name string) {
 	// This is handled in onProcessStateChange
 }
 
 // monitorProcesses monitors all processes
-func (s *Supavisor) monitorProcesses() {
+func (s *Server) monitorProcesses() {
 	ticker := time.NewTicker(monitorInterval)
 	defer ticker.Stop()
 
@@ -432,7 +432,7 @@ func (s *Supavisor) monitorProcesses() {
 }
 
 // setupSignalHandling sets up signal handling for graceful shutdown
-func (s *Supavisor) setupSignalHandling() {
+func (s *Server) setupSignalHandling() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -447,7 +447,7 @@ func (s *Supavisor) setupSignalHandling() {
 }
 
 // checkIfRunning checks if another instance is already running
-func (s *Supavisor) checkIfRunning() error {
+func (s *Server) checkIfRunning() error {
 	// Check if PID file exists and process is running
 	if s.config.Supavisor.PidFile != "" {
 		if data, err := os.ReadFile(s.config.Supavisor.PidFile); err == nil {
@@ -489,7 +489,7 @@ func (s *Supavisor) checkIfRunning() error {
 }
 
 // writePIDFile writes the PID file
-func (s *Supavisor) writePIDFile() error {
+func (s *Server) writePIDFile() error {
 	if s.config.Supavisor.PidFile == "" {
 		return nil
 	}
@@ -499,7 +499,7 @@ func (s *Supavisor) writePIDFile() error {
 }
 
 // removePIDFile removes the PID file
-func (s *Supavisor) removePIDFile() {
+func (s *Server) removePIDFile() {
 	if s.config.Supavisor.PidFile != "" {
 		if err := os.Remove(s.config.Supavisor.PidFile); err != nil {
 			s.logger.Warn("failed to remove PID file", "error", err)

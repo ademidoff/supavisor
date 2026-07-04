@@ -13,7 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/ademidoff/supavisor/internal/config"
-	"github.com/ademidoff/supavisor/internal/supavisor"
+	"github.com/ademidoff/supavisor/internal/server"
 )
 
 // parseLogLevel converts a string log level to slog.Level
@@ -132,7 +132,7 @@ func main() { //nolint:gocyclo,funlen
 	l.Info("Setup completed.")
 
 	// Create supavisor with main component logger
-	sv, err := supavisor.NewSupavisor(cfg, logger)
+	sv, err := server.New(cfg, logger)
 	if err != nil {
 		l.Error("Failed to create supavisor", "error", err)
 		os.Exit(1)
