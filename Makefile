@@ -20,7 +20,7 @@ build:
 # Run all tests
 test:
 	@echo "Running tests..."
-	@go test -v ./...
+	@go test -race -v ./...
 
 # Install golangci-lint if not present or version doesn't match
 lint-install:

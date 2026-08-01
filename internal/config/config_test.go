@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ademidoff/supavisor/internal/dependency"
@@ -243,7 +244,10 @@ func TestParseBytes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := parseBytes(tt.input)
+			result, err := parseBytes("stdout_logfile_maxbytes", tt.input)
+			if err != nil {
+				t.Fatalf("parseBytes(%s) failed: %v", tt.input, err)
+			}
 			if result != tt.expected {
 				t.Errorf("parseBytes(%s) = %d, expected %d", tt.input, result, tt.expected)
 			}
@@ -251,68 +255,13 @@ func TestParseBytes(t *testing.T) {
 	}
 }
 
-func TestParseEnvironmentVariables(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected map[string]string
-		input    string
-		wantErr  bool
-	}{
-		{
-			name:  "simple variables",
-			input: "KEY1=value1,KEY2=value2",
-			expected: map[string]string{
-				"KEY1": "value1",
-				"KEY2": "value2",
-			},
-			wantErr: false,
-		},
-		{
-			name:  "quoted value with comma",
-			input: `KEY1=value1,KEY2="value with, comma",KEY3=value3`,
-			expected: map[string]string{
-				"KEY1": "value1",
-				"KEY2": "value with, comma",
-				"KEY3": "value3",
-			},
-			wantErr: false,
-		},
-		{
-			name:  "single quoted value",
-			input: `KEY1='value with, comma'`,
-			expected: map[string]string{
-				"KEY1": "value with, comma",
-			},
-			wantErr: false,
-		},
-		{
-			name:    "missing equals",
-			input:   "KEY1value1",
-			wantErr: true,
-		},
-		{
-			name:    "empty key",
-			input:   "=value1",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseEnvironmentVariables(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseEnvironmentVariables() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if len(result) != len(tt.expected) {
-					t.Errorf("Expected %d variables, got %d", len(tt.expected), len(result))
-				}
-				for k, v := range tt.expected {
-					if result[k] != v {
-						t.Errorf("Expected %s=%s, got %s=%s", k, v, k, result[k])
-					}
-				}
+// TestParseBytes_RejectsUnparseableSizes guards against a typo in a size limit
+// silently becoming the 50MB default.
+func TestParseBytes_RejectsUnparseableSizes(t *testing.T) {
+	for _, input := range []string{"10 MB please", "abc", "10TB", "-5MB", "1.5MB"} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := parseBytes("stdout_logfile_maxbytes", input); err == nil {
+				t.Errorf("Expected %s to be rejected", input)
 			}
 		})
 	}
@@ -746,5 +695,226 @@ func TestValidate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestParseConfigFile_RejectsUnknownKeys guards against a typo in a setting
+// being ignored and the program silently running on defaults.
+func TestParseConfigFile_RejectsUnknownKeys(t *testing.T) {
+	tests := map[string]string{
+		"misspelled program setting": `
+programs:
+  app:
+    command: /bin/true
+    autorestrt: always
+`,
+		"unknown program setting": `
+programs:
+  app:
+    command: /bin/true
+    thisDoesNotExist: 42
+`,
+		"unknown daemon setting": `
+supavisor:
+  pidfle: /tmp/x.pid
+programs:
+  app:
+    command: /bin/true
+`,
+	}
+
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "supavisor.yml")
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatalf("Failed to write config: %v", err)
+			}
+			if _, err := ParseConfigFile(path); err == nil {
+				t.Error("Expected an unknown key to be rejected")
+			}
+		})
+	}
+}
+
+// TestParseConfigFile_ZeroIsNotTheSameAsUnset covers settings whose zero value
+// is meaningful: max_restarts: 0 asks for no retries, and used to be replaced
+// by the default of 3.
+func TestParseConfigFile_ZeroIsNotTheSameAsUnset(t *testing.T) {
+	content := `
+programs:
+  explicit:
+    command: /bin/true
+    startsecs: 0
+    max_restarts: 0
+    stopwaitsecs: 0
+    priority: 0
+  defaulted:
+    command: /bin/true
+`
+	path := filepath.Join(t.TempDir(), "supavisor.yml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := ParseConfigFile(path)
+	if err != nil {
+		t.Fatalf("Failed to parse config: %v", err)
+	}
+
+	explicit := cfg.Programs["explicit"]
+	if explicit.StartSecs != 0 {
+		t.Errorf("startsecs: 0 became %d", explicit.StartSecs)
+	}
+	if explicit.MaxRestarts != 0 {
+		t.Errorf("max_restarts: 0 became %d", explicit.MaxRestarts)
+	}
+	if explicit.StopWaitSecs != 0 {
+		t.Errorf("stopwaitsecs: 0 became %d", explicit.StopWaitSecs)
+	}
+	if explicit.Priority != 0 {
+		t.Errorf("priority: 0 became %d", explicit.Priority)
+	}
+
+	// An absent setting still takes its default.
+	defaulted := cfg.Programs["defaulted"]
+	if defaulted.StartSecs != defaultStartSecs {
+		t.Errorf("Unset startsecs = %d, expected %d", defaulted.StartSecs, defaultStartSecs)
+	}
+	if defaulted.MaxRestarts != defaultMaxRestarts {
+		t.Errorf("Unset max_restarts = %d, expected %d", defaulted.MaxRestarts, defaultMaxRestarts)
+	}
+	if defaulted.StopWaitSecs != defaultStopWaitSecs {
+		t.Errorf("Unset stopwaitsecs = %d, expected %d", defaulted.StopWaitSecs, defaultStopWaitSecs)
+	}
+	if defaulted.Priority != defaultPriority {
+		t.Errorf("Unset priority = %d, expected %d", defaulted.Priority, defaultPriority)
+	}
+}
+
+func TestParseConfigFile_RejectsAnInvalidStopSignal(t *testing.T) {
+	content := `
+programs:
+  app:
+    command: /bin/true
+    stopsignal: BANANA
+`
+	path := filepath.Join(t.TempDir(), "supavisor.yml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	if _, err := ParseConfigFile(path); err == nil {
+		t.Error("Expected an invalid stopsignal to be rejected")
+	}
+}
+
+func TestParseConfigFile_AcceptsStopSignalWithOrWithoutPrefix(t *testing.T) {
+	content := `
+programs:
+  a:
+    command: /bin/true
+    stopsignal: INT
+  b:
+    command: /bin/true
+    stopsignal: SIGQUIT
+  c:
+    command: /bin/true
+`
+	path := filepath.Join(t.TempDir(), "supavisor.yml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := ParseConfigFile(path)
+	if err != nil {
+		t.Fatalf("Failed to parse config: %v", err)
+	}
+	if cfg.Programs["a"].StopSignal != syscall.SIGINT {
+		t.Errorf("stopsignal INT = %v", cfg.Programs["a"].StopSignal)
+	}
+	if cfg.Programs["b"].StopSignal != syscall.SIGQUIT {
+		t.Errorf("stopsignal SIGQUIT = %v", cfg.Programs["b"].StopSignal)
+	}
+	if cfg.Programs["c"].StopSignal != syscall.SIGTERM {
+		t.Errorf("Default stopsignal = %v, expected SIGTERM", cfg.Programs["c"].StopSignal)
+	}
+}
+
+// TestParseConfigFile_RejectsUserUntilImplemented guards against a silent
+// security surprise: `user: nobody` was parsed and ignored, so the program ran
+// as whatever supavisor runs as, typically root.
+func TestParseConfigFile_RejectsUserUntilImplemented(t *testing.T) {
+	content := `
+programs:
+  app:
+    command: /bin/true
+    user: nobody
+`
+	path := filepath.Join(t.TempDir(), "supavisor.yml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	_, err := ParseConfigFile(path)
+	if err == nil {
+		t.Fatal("Expected user to be rejected while it has no effect")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("Error should say the setting is unimplemented, got: %v", err)
+	}
+}
+
+// TestValidate_RejectsSharedLogFiles guards the assumption rotation relies on:
+// supavisor owns each log file, so two programs cannot share one.
+func TestValidate_RejectsSharedLogFiles(t *testing.T) {
+	cfg := &Config{
+		Supavisor: SupavisorConfig{Socket: "/tmp/s.sock"},
+		Programs: map[string]*ProgramConfig{
+			"a": {Name: "a", Command: "/bin/true", StdoutLogfile: "/var/log/shared.log"},
+			"b": {Name: "b", Command: "/bin/true", StdoutLogfile: "/var/log/shared.log"},
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Expected two programs sharing a log file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "shared.log") {
+		t.Errorf("Error should name the file, got: %v", err)
+	}
+}
+
+// TestValidate_AllowsOneProgramSharingItsOwnStreams keeps the supported case
+// working: stdout and stderr of the same program may point at one file.
+func TestValidate_AllowsOneProgramSharingItsOwnStreams(t *testing.T) {
+	cfg := &Config{
+		Supavisor: SupavisorConfig{Socket: "/tmp/s.sock"},
+		Programs: map[string]*ProgramConfig{
+			"a": {
+				Name: "a", Command: "/bin/true",
+				StdoutLogfile: "/var/log/a.log",
+				StderrLogfile: "/var/log/a.log",
+			},
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("A program may point both streams at one file: %v", err)
+	}
+}
+
+// TestValidate_RejectsAnUnbindableSocketPath turns a bare "bind: invalid
+// argument" from the listener into something that says what is wrong.
+func TestValidate_RejectsAnUnbindableSocketPath(t *testing.T) {
+	cfg := &Config{
+		Supavisor: SupavisorConfig{Socket: "/tmp/" + strings.Repeat("d/", 60) + "s.sock"},
+		Programs:  map[string]*ProgramConfig{},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Expected an over-long socket path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unix socket") {
+		t.Errorf("Error should explain the limit, got: %v", err)
 	}
 }

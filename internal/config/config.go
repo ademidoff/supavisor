@@ -1,13 +1,17 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,15 +25,40 @@ const (
 	RestartUnexpected RestartPolicy = "unexpected"
 )
 
-const defaultLogFileMaxBytes = 50 * 1024 * 1024
+const (
+	defaultLogFileMaxBytes = 50 * 1024 * 1024
+
+	// defaultStopWaitSecs is how long a process gets to exit on its stop signal
+	// before it is killed.
+	defaultStopWaitSecs = 10
+
+	defaultLogFileBackups = 10
+	defaultStartSecs      = 1
+	defaultMaxRestarts    = 3
+	defaultPriority       = 999
+
+	// maxSocketPathLen is the smallest sockaddr_un limit across the platforms
+	// supavisor runs on (104 on macOS, 108 on Linux), including the terminator.
+	maxSocketPathLen = 104
+)
+
+// intOrDefault returns the configured value, treating an absent setting rather
+// than a zero one as "not configured".
+func intOrDefault(configured *int, fallback int) int {
+	if configured == nil {
+		return fallback
+	}
+	return *configured
+}
 
 // SupavisorConfig represents the main supavisor configuration
 type SupavisorConfig struct {
-	LogFile   string
-	PidFile   string
-	Socket    string
-	LogFormat string
-	LogLevel  string
+	LogFile     string
+	PidFile     string
+	Socket      string
+	SocketGroup string
+	LogFormat   string
+	LogLevel    string
 }
 
 // ProgramConfig represents configuration for a single program
@@ -46,6 +75,8 @@ type ProgramConfig struct {
 	Autostart             bool
 	Priority              int
 	StartSecs             int
+	StopSignal            syscall.Signal
+	StopWaitSecs          int
 	MaxRestarts           int
 	StdoutLogfileMaxBytes int64
 	StdoutLogfileBackups  int
@@ -57,8 +88,11 @@ type ProgramConfig struct {
 
 // Config represents the complete configuration
 type Config struct {
-	Programs  map[string]*ProgramConfig
-	Supavisor SupavisorConfig
+	Programs map[string]*ProgramConfig
+	// SourcePath is the main config file this was read from, so that a reload
+	// knows where to look. It is empty for a configuration built in code.
+	SourcePath string
+	Supavisor  SupavisorConfig
 }
 
 // configFile represents the YAML config file structure
@@ -68,32 +102,39 @@ type configFile struct {
 }
 
 type supavisorFile struct {
-	LogFile   string `yaml:"logfile"`
-	PidFile   string `yaml:"pidfile"`
-	Socket    string `yaml:"socket"`
-	LogFormat string `yaml:"log_format"`
-	LogLevel  string `yaml:"log_level"`
+	LogFile     string `yaml:"logfile"`
+	PidFile     string `yaml:"pidfile"`
+	Socket      string `yaml:"socket"`
+	SocketGroup string `yaml:"socket_group"`
+	LogFormat   string `yaml:"log_format"`
+	LogLevel    string `yaml:"log_level"`
 }
 
 type programFile struct {
-	Environment           map[string]string `yaml:"environment"`
-	Autostart             *bool             `yaml:"autostart"`
-	Command               string            `yaml:"command"`
-	Directory             string            `yaml:"directory"`
-	Autorestart           string            `yaml:"autorestart"`
-	StdoutLogfile         string            `yaml:"stdout_logfile"`
-	StderrLogfile         string            `yaml:"stderr_logfile"`
-	StdoutLogfileMaxBytes string            `yaml:"stdout_logfile_maxbytes"`
-	StderrLogfileMaxBytes string            `yaml:"stderr_logfile_maxbytes"`
-	User                  string            `yaml:"user"`
-	DependsOn             []string          `yaml:"depends_on"`
-	Priority              int               `yaml:"priority"`
-	StartSecs             int               `yaml:"startsecs"`
-	MaxRestarts           int               `yaml:"max_restarts"`
-	StdoutLogfileBackups  int               `yaml:"stdout_logfile_backups"`
-	StdoutLogfileMaxAge   int               `yaml:"stdout_logfile_maxage"`
-	StderrLogfileBackups  int               `yaml:"stderr_logfile_backups"`
-	StderrLogfileMaxAge   int               `yaml:"stderr_logfile_maxage"`
+	Environment map[string]string `yaml:"environment"`
+	Autostart   *bool             `yaml:"autostart"`
+
+	// Pointers so an explicit 0 is distinguishable from an absent setting:
+	// max_restarts: 0 means never retry, not "use the default of 3".
+	Priority             *int `yaml:"priority"`
+	StartSecs            *int `yaml:"startsecs"`
+	StopWaitSecs         *int `yaml:"stopwaitsecs"`
+	MaxRestarts          *int `yaml:"max_restarts"`
+	StdoutLogfileBackups *int `yaml:"stdout_logfile_backups"`
+	StdoutLogfileMaxAge  *int `yaml:"stdout_logfile_maxage"`
+	StderrLogfileBackups *int `yaml:"stderr_logfile_backups"`
+	StderrLogfileMaxAge  *int `yaml:"stderr_logfile_maxage"`
+
+	Command               string   `yaml:"command"`
+	Directory             string   `yaml:"directory"`
+	Autorestart           string   `yaml:"autorestart"`
+	StopSignal            string   `yaml:"stopsignal"`
+	StdoutLogfile         string   `yaml:"stdout_logfile"`
+	StderrLogfile         string   `yaml:"stderr_logfile"`
+	StdoutLogfileMaxBytes string   `yaml:"stdout_logfile_maxbytes"`
+	StderrLogfileMaxBytes string   `yaml:"stderr_logfile_maxbytes"`
+	User                  string   `yaml:"user"`
+	DependsOn             []string `yaml:"depends_on"`
 }
 
 // ParseConfigFile parses a single YAML configuration file. It does not look for
@@ -106,14 +147,17 @@ func ParseConfigFile(path string) (*Config, error) {
 
 	config := &Config{
 		Supavisor: SupavisorConfig{
-			LogFile:   cfg.Supavisor.LogFile,
-			PidFile:   defaultString(cfg.Supavisor.PidFile, "/var/run/supavisor.pid"),
-			Socket:    defaultString(cfg.Supavisor.Socket, "/tmp/supavisor.sock"),
-			LogFormat: defaultString(cfg.Supavisor.LogFormat, "text"),
-			LogLevel:  defaultString(cfg.Supavisor.LogLevel, "info"),
+			LogFile:     cfg.Supavisor.LogFile,
+			PidFile:     defaultString(cfg.Supavisor.PidFile, "/var/run/supavisor.pid"),
+			Socket:      defaultString(cfg.Supavisor.Socket, "/tmp/supavisor.sock"),
+			SocketGroup: cfg.Supavisor.SocketGroup,
+			LogFormat:   defaultString(cfg.Supavisor.LogFormat, "text"),
+			LogLevel:    defaultString(cfg.Supavisor.LogLevel, "info"),
 		},
 		Programs: make(map[string]*ProgramConfig),
 	}
+
+	config.SourcePath = path
 
 	if err := mergePrograms(config.Programs, cfg.Programs, path, map[string]string{}); err != nil {
 		return nil, err
@@ -202,8 +246,17 @@ func parseConfigFileRaw(path string) (*configFile, error) {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
+	// Reject unknown keys rather than ignoring them: a typo in a setting that
+	// governs restarts or log rotation would otherwise be silently replaced by
+	// a default, and the program would run with behavior nobody asked for.
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+
 	var cfg configFile
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := decoder.Decode(&cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return &cfg, nil
+		}
 		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
 	return &cfg, nil
@@ -266,17 +319,29 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		return nil, fmt.Errorf("invalid autorestart policy: %s (must be always, never, or unexpected)", restartPolicy)
 	}
 
-	startSecs := raw.StartSecs
-	if startSecs == 0 {
-		startSecs = 1
+	// Accepting this and running the program as the daemon's user anyway would
+	// be a silent security surprise: a config asking for an unprivileged user
+	// would run as root.
+	if strings.TrimSpace(raw.User) != "" {
+		return nil, fmt.Errorf("user is not implemented: remove it, or run supavisor as %s", raw.User)
 	}
-	maxRestarts := raw.MaxRestarts
-	if maxRestarts == 0 {
-		maxRestarts = 3
+
+	stopSignal, err := parseSignal(raw.StopSignal)
+	if err != nil {
+		return nil, err
 	}
-	priority := raw.Priority
-	if priority == 0 {
-		priority = 999
+
+	startSecs := intOrDefault(raw.StartSecs, defaultStartSecs)
+	stopWaitSecs := intOrDefault(raw.StopWaitSecs, defaultStopWaitSecs)
+	maxRestarts := intOrDefault(raw.MaxRestarts, defaultMaxRestarts)
+	priority := intOrDefault(raw.Priority, defaultPriority)
+
+	for field, value := range map[string]int{
+		"startsecs": startSecs, "stopwaitsecs": stopWaitSecs, "max_restarts": maxRestarts,
+	} {
+		if value < 0 {
+			return nil, fmt.Errorf("invalid %s: %d (must not be negative)", field, value)
+		}
 	}
 
 	env := make(map[string]string)
@@ -284,21 +349,9 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		maps.Copy(env, raw.Environment)
 	}
 
-	stdoutMaxBytes := parseBytes(raw.StdoutLogfileMaxBytes)
-	if stdoutMaxBytes == 0 {
-		stdoutMaxBytes = defaultLogFileMaxBytes
-	}
-	stderrMaxBytes := parseBytes(raw.StderrLogfileMaxBytes)
-	if stderrMaxBytes == 0 {
-		stderrMaxBytes = defaultLogFileMaxBytes
-	}
-	stdoutBackups := raw.StdoutLogfileBackups
-	if stdoutBackups == 0 {
-		stdoutBackups = 10
-	}
-	stderrBackups := raw.StderrLogfileBackups
-	if stderrBackups == 0 {
-		stderrBackups = 10
+	logging, err := convertLogging(raw)
+	if err != nil {
+		return nil, err
 	}
 
 	return &ProgramConfig{
@@ -311,50 +364,116 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		DependsOn:             raw.DependsOn,
 		Priority:              priority,
 		StartSecs:             startSecs,
+		StopSignal:            stopSignal,
+		StopWaitSecs:          stopWaitSecs,
 		MaxRestarts:           maxRestarts,
 		StdoutLogfile:         raw.StdoutLogfile,
 		StderrLogfile:         raw.StderrLogfile,
-		StdoutLogfileMaxBytes: stdoutMaxBytes,
-		StdoutLogfileBackups:  stdoutBackups,
-		StdoutLogfileMaxAge:   raw.StdoutLogfileMaxAge,
-		StderrLogfileMaxBytes: stderrMaxBytes,
-		StderrLogfileBackups:  stderrBackups,
-		StderrLogfileMaxAge:   raw.StderrLogfileMaxAge,
+		StdoutLogfileMaxBytes: logging.stdoutMaxBytes,
+		StdoutLogfileBackups:  logging.stdoutBackups,
+		StdoutLogfileMaxAge:   intOrDefault(raw.StdoutLogfileMaxAge, 0),
+		StderrLogfileMaxBytes: logging.stderrMaxBytes,
+		StderrLogfileBackups:  logging.stderrBackups,
+		StderrLogfileMaxAge:   intOrDefault(raw.StderrLogfileMaxAge, 0),
 		User:                  raw.User,
 	}, nil
 }
 
-// parseBytes parses a byte string like "10MB", "1GB", "500KB" into bytes
-func parseBytes(s string) int64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 50 * 1024 * 1024 // Default 50MB
+// loggingDefaults holds the resolved log rotation settings for a program
+type loggingDefaults struct {
+	stdoutMaxBytes int64
+	stderrMaxBytes int64
+	stdoutBackups  int
+	stderrBackups  int
+}
+
+func convertLogging(raw *programFile) (loggingDefaults, error) {
+	stdoutMaxBytes, err := parseBytes("stdout_logfile_maxbytes", raw.StdoutLogfileMaxBytes)
+	if err != nil {
+		return loggingDefaults{}, err
+	}
+	stderrMaxBytes, err := parseBytes("stderr_logfile_maxbytes", raw.StderrLogfileMaxBytes)
+	if err != nil {
+		return loggingDefaults{}, err
 	}
 
-	s = strings.ToUpper(s)
+	l := loggingDefaults{
+		stdoutMaxBytes: stdoutMaxBytes,
+		stderrMaxBytes: stderrMaxBytes,
+		stdoutBackups:  intOrDefault(raw.StdoutLogfileBackups, defaultLogFileBackups),
+		stderrBackups:  intOrDefault(raw.StderrLogfileBackups, defaultLogFileBackups),
+	}
+
+	return l, nil
+}
+
+// stopSignals are the signals a program may be configured to stop on
+var stopSignals = map[string]syscall.Signal{
+	"TERM": syscall.SIGTERM,
+	"INT":  syscall.SIGINT,
+	"QUIT": syscall.SIGQUIT,
+	"HUP":  syscall.SIGHUP,
+	"USR1": syscall.SIGUSR1,
+	"USR2": syscall.SIGUSR2,
+	"KILL": syscall.SIGKILL,
+}
+
+// parseSignal resolves a configured stop signal name, with or without the SIG
+// prefix. An empty name means SIGTERM, which is what a daemon expects to be
+// asked to shut down with.
+func parseSignal(name string) (syscall.Signal, error) {
+	if strings.TrimSpace(name) == "" {
+		return syscall.SIGTERM, nil
+	}
+
+	key := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(name)), "SIG")
+	sig, ok := stopSignals[key]
+	if !ok {
+		names := make([]string, 0, len(stopSignals))
+		for known := range stopSignals {
+			names = append(names, known)
+		}
+		sort.Strings(names)
+		return 0, fmt.Errorf("invalid stopsignal: %s (must be one of %s)", name, strings.Join(names, ", "))
+	}
+	return sig, nil
+}
+
+// parseBytes parses a byte string like "10MB", "1GB", "500KB" into bytes. An
+// empty value takes the default; anything unparseable is an error rather than a
+// silent fallback, so that a typo in a size limit cannot quietly become 50MB.
+func parseBytes(field, value string) (int64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultLogFileMaxBytes, nil
+	}
+
+	upper := strings.ToUpper(trimmed)
 	var multiplier int64 = 1
 
 	switch {
-	case strings.HasSuffix(s, "KB"):
+	case strings.HasSuffix(upper, "KB"):
 		multiplier = 1024
-		s = strings.TrimSuffix(s, "KB")
-	case strings.HasSuffix(s, "MB"):
+		upper = strings.TrimSuffix(upper, "KB")
+	case strings.HasSuffix(upper, "MB"):
 		multiplier = 1024 * 1024
-		s = strings.TrimSuffix(s, "MB")
-	case strings.HasSuffix(s, "GB"):
+		upper = strings.TrimSuffix(upper, "MB")
+	case strings.HasSuffix(upper, "GB"):
 		multiplier = 1024 * 1024 * 1024
-		s = strings.TrimSuffix(s, "GB")
-	case strings.HasSuffix(s, "B"):
-		multiplier = 1
-		s = strings.TrimSuffix(s, "B")
+		upper = strings.TrimSuffix(upper, "GB")
+	case strings.HasSuffix(upper, "B"):
+		upper = strings.TrimSuffix(upper, "B")
 	}
 
-	val, err := strconv.ParseInt(s, 10, 64)
+	val, err := strconv.ParseInt(strings.TrimSpace(upper), 10, 64)
 	if err != nil {
-		return 50 * 1024 * 1024 // Default on error
+		return 0, fmt.Errorf("invalid %s: %s (expected a byte count, optionally suffixed with KB, MB or GB)", field, value)
+	}
+	if val < 0 {
+		return 0, fmt.Errorf("invalid %s: %s (must not be negative)", field, value)
 	}
 
-	return val * multiplier
+	return val * multiplier, nil
 }
 
 // Validate validates the configuration
@@ -380,7 +499,58 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.validateLogPaths(); err != nil {
+		return err
+	}
+
+	return c.validateSocketPath()
+}
+
+// validateLogPaths rejects two programs writing to the same log file.
+//
+// Supavisor owns the log descriptor so that rotation works, which means two
+// programs sharing a path would rotate the same files independently and
+// destroy each other's output.
+func (c *Config) validateLogPaths() error {
+	owners := make(map[string]string)
+
+	for _, name := range sortedProgramNames(c.Programs) {
+		prog := c.Programs[name]
+		for _, path := range []string{prog.StdoutLogfile, prog.StderrLogfile} {
+			if path == "" {
+				continue
+			}
+			// One program pointing both its streams at one file is fine: they
+			// share a single writer.
+			if owner, taken := owners[path]; taken && owner != name {
+				return fmt.Errorf("programs %s and %s both log to %s: each log file must belong to one program", owner, name, path)
+			}
+			owners[path] = name
+		}
+	}
+
 	return nil
+}
+
+// validateSocketPath rejects a socket path the kernel cannot bind.
+//
+// The sockaddr_un limit is around 104 bytes, and exceeding it surfaces as a
+// bare "bind: invalid argument" from the listener with nothing to point at.
+func (c *Config) validateSocketPath() error {
+	if len(c.Supavisor.Socket) >= maxSocketPathLen {
+		return fmt.Errorf("socket path is %d bytes, which exceeds the %d byte limit for a unix socket: %s",
+			len(c.Supavisor.Socket), maxSocketPathLen-1, c.Supavisor.Socket)
+	}
+	return nil
+}
+
+func sortedProgramNames(programs map[string]*ProgramConfig) []string {
+	names := make([]string, 0, len(programs))
+	for name := range programs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (c *Config) checkCircularDependency(name string, visited, recStack map[string]bool) error {
@@ -440,81 +610,6 @@ func (c *Config) EnsureLogDirectories() error {
 	}
 
 	return nil
-}
-
-// parseEnvironmentVariables parses comma-separated environment variables (legacy INI format)
-// Supports formats like: KEY1=value1,KEY2=value2,KEY3="value with, comma"
-func parseEnvironmentVariables(envStr string) (map[string]string, error) {
-	result := make(map[string]string)
-
-	// Track if we're inside quotes
-	inQuotes := false
-	quoteChar := byte(0)
-	current := ""
-
-	for i := 0; i < len(envStr); i++ {
-		char := envStr[i]
-
-		// Handle quotes
-		if char == '"' || char == '\'' {
-			if !inQuotes {
-				inQuotes = true
-				quoteChar = char
-			} else if char == quoteChar {
-				inQuotes = false
-				quoteChar = 0
-			} else {
-				current += string(char)
-			}
-		} else if char == ',' && !inQuotes {
-			// End of current variable, parse it
-			if current != "" {
-				key, value, err := parseEnvPair(strings.TrimSpace(current))
-				if err != nil {
-					return nil, fmt.Errorf("invalid environment variable format '%s': %w", current, err)
-				}
-				result[key] = value
-				current = ""
-			}
-		} else {
-			current += string(char)
-		}
-	}
-
-	// Parse the last variable
-	if current != "" {
-		key, value, err := parseEnvPair(strings.TrimSpace(current))
-		if err != nil {
-			return nil, fmt.Errorf("invalid environment variable format '%s': %w", current, err)
-		}
-		result[key] = value
-	}
-
-	return result, nil
-}
-
-// parseEnvPair parses a single KEY=VALUE pair
-func parseEnvPair(pair string) (key, value string, err error) {
-	before, after, ok := strings.Cut(pair, "=")
-	if !ok {
-		return "", "", fmt.Errorf("missing '=' in environment variable")
-	}
-
-	key = strings.TrimSpace(before)
-	value = strings.TrimSpace(after)
-
-	if len(value) >= 2 {
-		if (value[0] == '"' && value[len(value)-1] == '"') ||
-			(value[0] == '\'' && value[len(value)-1] == '\'') {
-			value = value[1 : len(value)-1]
-		}
-	}
-
-	if key == "" {
-		return "", "", fmt.Errorf("empty key in environment variable")
-	}
-
-	return key, value, nil
 }
 
 func getDir(path string) string {

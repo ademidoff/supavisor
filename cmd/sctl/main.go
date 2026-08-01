@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -14,8 +15,15 @@ import (
 )
 
 const (
-	tabPadding     = 3
-	requestTimeout = 5 * time.Second
+	tabPadding = 3
+
+	// dialTimeout fails fast when the daemon is not listening.
+	dialTimeout = 5 * time.Second
+
+	// requestTimeout has to outlast a command's own work: stopping a process
+	// that ignores SIGINT takes the full graceful shutdown timeout before it is
+	// killed, and a start waits for the process to come up.
+	requestTimeout = 60 * time.Second
 )
 
 func main() {
@@ -25,13 +33,24 @@ func main() {
 	flag.Usage = printUsage
 	flag.Parse()
 
-	if len(os.Args) < 2 {
+	if flag.NArg() == 0 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	command := os.Args[1]
-	args := os.Args[2:]
+	command := flag.Arg(0)
+	args := flag.Args()[1:]
+
+	// Go's flag package stops parsing at the first non-flag argument, so an
+	// option placed after the command would be silently ignored and we would
+	// talk to the default socket instead of the requested one.
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			fmt.Fprintf(os.Stderr, "Error: options must be given before the command: %s\n\n", arg)
+			printUsage()
+			os.Exit(1)
+		}
+	}
 
 	resp, err := sendRequest(socketPath, command, args)
 	if err != nil {
@@ -46,14 +65,11 @@ func main() {
 	}
 
 	// Print response based on command
-	switch command {
-	case "status":
+	if command == api.CommandStatus {
 		printStatus(*resp)
-	case "start", "stop", "restart", "reload", "shutdown":
-		fmt.Println(resp.Message)
-	default:
-		fmt.Println(resp.Message)
+		return
 	}
+	fmt.Println(resp.Message)
 }
 
 func printStatus(resp api.Response) {
@@ -135,7 +151,7 @@ func getInt(m map[string]any, key string) int {
 func sendRequest(socketPath, command string, args []string) (*api.Response, error) {
 	// Connect to supavisor with timeout
 	dialer := net.Dialer{
-		Timeout: requestTimeout,
+		Timeout: dialTimeout,
 	}
 	conn, err := dialer.Dial("unix", socketPath)
 	if err != nil {
@@ -144,7 +160,6 @@ func sendRequest(socketPath, command string, args []string) (*api.Response, erro
 	defer conn.Close()
 
 	// Set read and write deadlines to prevent hanging
-	// Use a shorter timeout for faster failure when daemon is not responding
 	deadline := time.Now().Add(requestTimeout)
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
@@ -182,6 +197,6 @@ func printUsage() {
 	fmt.Println("  reload              Reload configuration")
 	fmt.Println("  shutdown            Shutdown supavisor")
 	fmt.Println()
-	fmt.Println("Options:")
+	fmt.Println("Options (must precede the command):")
 	fmt.Println("  -s, -socket PATH    Path to supavisor socket (default: /tmp/supavisor.sock)")
 }

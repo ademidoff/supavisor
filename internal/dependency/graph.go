@@ -3,6 +3,7 @@ package dependency
 import (
 	"fmt"
 	"slices"
+	"sort"
 )
 
 // Graph represents a directed graph of process dependencies
@@ -130,13 +131,53 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	return result, nil
 }
 
-// GetDependents returns all processes that depend on the given process
-func (g *Graph) GetDependents(name string) []string {
-	node, exists := g.nodes[name]
-	if !exists {
-		return []string{}
+// Tiers groups nodes so that everything in a tier depends only on nodes in
+// earlier tiers. Startup works forwards through the tiers, shutdown backwards,
+// and everything within one tier is independent of its peers.
+// Returns an error if a circular dependency is detected.
+func (g *Graph) Tiers() ([][]string, error) {
+	inDegree := make(map[string]int, len(g.nodes))
+	for name, node := range g.nodes {
+		inDegree[name] = 0
+		for _, dep := range node.Dependencies {
+			if _, exists := g.nodes[dep]; exists {
+				inDegree[name]++
+			}
+		}
 	}
-	return node.Dependents
+
+	current := make([]string, 0, len(g.nodes))
+	for name, degree := range inDegree {
+		if degree == 0 {
+			current = append(current, name)
+		}
+	}
+
+	tiers := [][]string{}
+	placed := 0
+
+	for len(current) > 0 {
+		sort.Strings(current)
+		tiers = append(tiers, current)
+		placed += len(current)
+
+		next := make([]string, 0, len(g.nodes))
+		for _, name := range current {
+			for _, dependent := range g.nodes[name].Dependents {
+				inDegree[dependent]--
+				if inDegree[dependent] == 0 {
+					next = append(next, dependent)
+				}
+			}
+		}
+		current = next
+	}
+
+	if placed != len(g.nodes) {
+		return nil, fmt.Errorf("circular dependency detected")
+	}
+
+	return tiers, nil
 }
 
 // GetDependencies returns all processes that the given process depends on
@@ -146,19 +187,4 @@ func (g *Graph) GetDependencies(name string) []string {
 		return []string{}
 	}
 	return node.Dependencies
-}
-
-// HasNode checks if a node exists in the graph
-func (g *Graph) HasNode(name string) bool {
-	_, exists := g.nodes[name]
-	return exists
-}
-
-// AllNodes returns all node names in the graph
-func (g *Graph) AllNodes() []string {
-	nodes := make([]string, 0, len(g.nodes))
-	for name := range g.nodes {
-		nodes = append(nodes, name)
-	}
-	return nodes
 }

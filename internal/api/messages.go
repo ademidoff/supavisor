@@ -1,6 +1,17 @@
 // Package api contains the API messages for the supavisor and sctl.
 package api
 
+// Commands understood by the daemon. Both sides of the socket share these so
+// the protocol is defined in one place.
+const (
+	CommandStatus   = "status"
+	CommandStart    = "start"
+	CommandStop     = "stop"
+	CommandRestart  = "restart"
+	CommandReload   = "reload"
+	CommandShutdown = "shutdown"
+)
+
 // Request represents a request from the CLI
 type Request struct {
 	Command string   `json:"command"`

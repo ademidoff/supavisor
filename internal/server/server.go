@@ -16,9 +16,18 @@ import (
 )
 
 const (
-	dependencyTimeoutSeconds = 30
-	monitorInterval          = 5 * time.Second
-	pollInterval             = 100 * time.Millisecond
+	// actionTimeout bounds how long a start or stop request waits for the
+	// reconciler to produce a settled outcome before reporting back.
+	actionTimeout = 30 * time.Second
+	pollInterval  = 100 * time.Millisecond
+
+	// signalBuffer leaves room for a second stop signal to be noticed while the
+	// first one is being acted on.
+	signalBuffer = 4
+
+	exitOK          = 0
+	exitFailed      = 1
+	exitInterrupted = 130
 )
 
 // ProcessStatusInfo contains status information about a process
@@ -37,9 +46,19 @@ type Server struct {
 	logger          *slog.Logger
 	processLogger   *slog.Logger
 	processes       map[string]*process.Process
+	desired         map[string]DesiredState
+	inflight        map[string]bool
 	dependencyGraph *dependency.Graph
 	ipcServer       *IPCServer
+	pidLock         *pidLock
+	stateDirty      chan struct{}
+	reconcileNow    chan struct{}
+	reconcileDone   chan struct{}
 	stopChan        chan struct{}
+	stateFile       string
+	bootID          string
+	actions         sync.WaitGroup
+	reloadMutex     sync.Mutex
 	processMutex    sync.RWMutex
 	running         bool
 }
@@ -54,25 +73,49 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("failed to create log directories: %w", err)
 	}
 
-	// Build dependency graph
-	graph := dependency.NewGraph()
-	for name, progConfig := range cfg.Programs {
-		graph.AddNode(name, progConfig.DependsOn)
-	}
+	graph := buildDependencyGraph(cfg)
 
 	// Verify no circular dependencies
 	if _, err := graph.TopologicalSort(); err != nil {
 		return nil, fmt.Errorf("dependency graph validation failed: %w", err)
 	}
 
-	return &Server{
+	s := &Server{
 		config:          cfg,
 		logger:          logger.With("component", "main"),
 		processLogger:   logger,
-		processes:       make(map[string]*process.Process),
+		processes:       make(map[string]*process.Process, len(cfg.Programs)),
+		desired:         make(map[string]DesiredState, len(cfg.Programs)),
+		inflight:        make(map[string]bool),
 		dependencyGraph: graph,
 		stopChan:        make(chan struct{}),
-	}, nil
+		stateDirty:      make(chan struct{}, 1),
+		reconcileNow:    make(chan struct{}, 1),
+		reconcileDone:   make(chan struct{}),
+		stateFile:       stateFilePath(cfg.Supavisor.PidFile),
+	}
+
+	// Recorded without failing startup over it: an unidentifiable boot only
+	// means orphan reaping is skipped, which is the safe direction.
+	boot, err := bootID()
+	if err != nil {
+		s.logger.Warn("Cannot identify this boot, processes surviving a crash will not be reaped", "error", err)
+	}
+	s.bootID = boot
+
+	// Every configured program gets a process up front, running or not, so that
+	// the reconciler and the status command can see the whole set rather than
+	// only what has been started so far.
+	for name, progConfig := range cfg.Programs {
+		s.processes[name] = s.newProcess(progConfig)
+
+		s.desired[name] = DesiredStopped
+		if progConfig.Autostart {
+			s.desired[name] = DesiredRunning
+		}
+	}
+
+	return s, nil
 }
 
 // Start starts the supavisor
@@ -81,35 +124,35 @@ func (s *Server) Start() error {
 		return fmt.Errorf("supavisor is already running")
 	}
 
-	// Check if another instance is already running
-	if err := s.checkIfRunning(); err != nil {
+	// Holding this for the lifetime of the daemon is what keeps a second
+	// instance from starting, and it is dropped by the kernel on a crash.
+	if err := s.lockPIDFile(); err != nil {
 		return err
 	}
+
+	// Holding the lock means no other daemon is running, so anything still
+	// alive from a previous one is an orphan of a crash.
+	s.reapOrphans()
 
 	s.running = true
 
 	// Start IPC server
-	s.ipcServer = NewIPCServer(s.config.Supavisor.Socket, s)
+	s.ipcServer = NewIPCServer(s.config.Supavisor.Socket, s.config.Supavisor.SocketGroup, s)
 	if err := s.ipcServer.Start(); err != nil {
+		s.releasePIDFile()
+		s.running = false
 		return fmt.Errorf("failed to start IPC server: %w", err)
-	}
-
-	// Write PID file
-	if err := s.writePIDFile(); err != nil {
-		return fmt.Errorf("failed to write PID file: %w", err)
 	}
 
 	// Setup signal handling
 	s.setupSignalHandling()
 
+	go s.recordStateChanges()
+
 	s.logger.Info("IPC server started", "socket", s.config.Supavisor.Socket)
 	s.logger.Info("Starting processes...")
 
-	// Start processes that should autostart
-	s.startAutostartProcesses()
-
-	// Monitor processes
-	go s.monitorProcesses()
+	go s.reconcileLoop()
 
 	s.logger.Info("Supavisor started successfully")
 	return nil
@@ -125,16 +168,12 @@ func (s *Server) Stop() error {
 	s.running = false
 	close(s.stopChan)
 
-	// Stop all processes
-	s.processMutex.Lock()
-	processCount := len(s.processes)
-	s.logger.Info("Stopping processes...", "count", processCount)
-	for _, proc := range s.processes {
-		if err := proc.Stop(); err != nil {
-			s.logger.Warn("failed to stop process", "error", err)
-		}
-	}
-	s.processMutex.Unlock()
+	// Let the reconciler and anything it started settle first, or it would
+	// bring processes straight back up as they are stopped.
+	<-s.reconcileDone
+	s.actions.Wait()
+
+	s.stopAllProcesses()
 
 	// Stop IPC server
 	if s.ipcServer != nil {
@@ -144,225 +183,108 @@ func (s *Server) Stop() error {
 		}
 	}
 
-	// Remove PID file
-	s.removePIDFile()
+	// Everything was stopped deliberately, so there is nothing for the next
+	// daemon to reap.
+	if s.stateFile != "" {
+		s.clearStateFile()
+	}
+
+	s.releasePIDFile()
 
 	s.logger.Info("Supavisor daemon stopped")
 	return nil
 }
 
-// startAutostartProcesses starts all processes configured to autostart
-func (s *Server) startAutostartProcesses() {
-	// Get topological sort order
-	order, err := s.dependencyGraph.TopologicalSort()
+// stopAllProcesses stops every process, working from the outermost dependents
+// inwards and stopping each tier in parallel.
+//
+// Stopping serially cost stopwaitsecs for every process that does not exit on
+// its stop signal, so a handful of them was enough to exceed systemd's
+// TimeoutStopSec and have the daemon killed with its processes still running.
+// Order matters as well: stopping a database before the programs using it is
+// the wrong way round.
+func (s *Server) stopAllProcesses() {
+	tiers, err := s.dependencyGraph.Tiers()
 	if err != nil {
-		s.logger.Warn("Failed to get startup order", "error", err)
-		// Start processes in config order
-		for name, progConfig := range s.config.Programs {
-			if progConfig.Autostart {
-				if err := s.StartProcess(name); err != nil {
-					s.logger.Error("failed to start process", "process", name, "error", err)
-				}
-			}
-		}
-		return
+		s.logger.Warn("Failed to order shutdown, stopping everything at once", "error", err)
+		tiers = [][]string{s.programNames()}
 	}
 
-	// Start processes in dependency order
-	for _, name := range order {
-		progConfig, exists := s.config.Programs[name]
-		if !exists {
-			continue
-		}
+	for tier := len(tiers) - 1; tier >= 0; tier-- {
+		names := tiers[tier]
+		s.logger.Info("Stopping processes", "tier", tier, "count", len(names), "processes", names)
 
-		if progConfig.Autostart {
-			s.logger.Info("Starting process (autostart enabled)", "process", name)
-			if err := s.StartProcess(name); err != nil {
-				s.logger.Error("Failed to start process", "process", name, "error", err)
-			} else {
-				s.logger.Info("Process started successfully", "process", name)
-				// Give the process a moment to transition from STARTING to RUNNING
-				// This helps dependent processes that check immediately
-				time.Sleep(pollInterval)
-			}
-		}
-	}
-}
-
-// waitForSingleDependency waits for a single dependency to be running
-func (s *Server) waitForSingleDependency(dep string) error {
-	// Wait up to dependencyTimeoutSeconds for the dependency to be running
-	timeout := time.After(dependencyTimeoutSeconds * time.Second)
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			return fmt.Errorf("timeout waiting for dependency %s", dep)
-		case <-ticker.C:
-			s.processMutex.RLock()
-			depProc, exists := s.processes[dep]
-			if !exists {
-				s.processMutex.RUnlock()
-				// Process doesn't exist yet, wait for it to be created
+		var wg sync.WaitGroup
+		for _, name := range names {
+			proc := s.process(name)
+			if proc == nil {
 				continue
 			}
-			state := depProc.GetState()
-			s.processMutex.RUnlock()
 
-			if state == process.StateRunning {
-				return nil
-			}
-			// If it's not Starting or Running, it failed
-			if state != process.StateStarting {
-				return fmt.Errorf("dependency %s is in state %s", dep, state)
-			}
-			// Still starting, wait more
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if stopErr := proc.Stop(); stopErr != nil {
+					s.logger.Warn("failed to stop process", "process", name, "error", stopErr)
+				}
+			}()
 		}
+		wg.Wait()
 	}
 }
 
-// StartProcess starts a specific process
-func (s *Server) StartProcess(name string) error { //nolint:gocyclo
-	progConfig, exists := s.config.Programs[name]
-	if !exists {
+// StartProcess marks a process as wanted and reports whether it came up
+func (s *Server) StartProcess(name string) error {
+	s.logger.Info("Start requested", "process", name)
+
+	proc := s.process(name)
+	if proc == nil {
 		return fmt.Errorf("process %s not found", name)
 	}
+	if proc.GetState() == process.StateRunning {
+		return fmt.Errorf("process %s is already running", name)
+	}
 
-	s.logger.Info("Starting process", "process", name)
-
-	s.processMutex.Lock()
-	defer s.processMutex.Unlock()
-
-	// Check if already exists
-	if _, exists := s.processes[name]; exists {
-		// Process already exists, check if it's running
-		proc := s.processes[name]
-		if proc.GetState() == process.StateRunning {
-			s.logger.Info("Process is already running", "process", name)
-			return fmt.Errorf("process %s is already running", name)
-		}
-		// Stop existing process if needed
-		s.logger.Info("Stopping existing process before restart", "process", name)
+	// A process that gave up, or exited on its own, has to be released back to
+	// STOPPED before the reconciler will consider starting it again.
+	if proc.GetState().IsStopped() {
 		if err := proc.Stop(); err != nil {
-			s.logger.Warn("failed to stop existing process", "process", name, "error", err)
+			s.logger.Warn("failed to reset process before start", "process", name, "error", err)
 		}
 	}
 
-	// Check dependencies and wait for them to be running if they're starting
-	deps := s.dependencyGraph.GetDependencies(name)
-	if len(deps) > 0 {
-		s.logger.Info("Process has dependencies", "process", name, "count", len(deps), "dependencies", deps)
+	if err := s.setDesired(name, DesiredRunning); err != nil {
+		return err
 	}
-	for _, dep := range deps {
-		depProc, exists := s.processes[dep]
-		if !exists {
-			// Dependency doesn't exist yet, wait for it to be created and running
-			s.logger.Info("Waiting for dependency to start", "process", name, "dependency", dep)
-			// Release the lock while waiting to avoid deadlock
-			s.processMutex.Unlock()
-			if err := s.waitForSingleDependency(dep); err != nil {
-				s.processMutex.Lock()
-				return fmt.Errorf("dependency %s failed to start: %w", dep, err)
-			}
-			s.processMutex.Lock()
-			// Re-check after waiting
-			depProc, exists = s.processes[dep]
-			if !exists || depProc.GetState() != process.StateRunning {
-				return fmt.Errorf("dependency %s is not running", dep)
-			}
-			s.logger.Info("Dependency is now running", "dependency", dep)
-			continue
-		}
-		state := depProc.GetState()
-		if state == process.StateStarting {
-			s.logger.Info("Waiting for dependency to finish starting", "process", name, "dependency", dep)
-			// Dependency is starting, wait for it to become running
-			// Release the lock while waiting to avoid deadlock
-			s.processMutex.Unlock()
-			if err := s.waitForSingleDependency(dep); err != nil {
-				s.processMutex.Lock()
-				return fmt.Errorf("dependency %s failed to start: %w", dep, err)
-			}
-			s.processMutex.Lock()
-			// Re-check the state after waiting
-			depProc, exists = s.processes[dep]
-			if !exists || depProc.GetState() != process.StateRunning {
-				return fmt.Errorf("dependency %s is not running", dep)
-			}
-			s.logger.Info("Dependency is now running", "process", name, "dependency", dep)
-		} else if state != process.StateRunning {
-			return fmt.Errorf("dependency %s is not running (state: %s)", dep, state)
-		}
-	}
+	s.requestReconcile()
 
-	return s.createAndStartProcess(name, progConfig)
+	return s.awaitState(name, func(state process.State) bool {
+		return state == process.StateRunning
+	})
 }
 
-// createAndStartProcess creates, starts, and registers a new process instance.
-// Must be called with processMutex held.
-func (s *Server) createAndStartProcess(name string, progConfig *config.ProgramConfig) error {
-	s.logger.Info("Creating process instance", "process", name)
-	proc := process.NewProcess(progConfig, s.processLogger)
-	proc.SetStateChangeCallback(s.onProcessStateChange)
-	proc.SetDependencyStopCallback(s.onDependencyStop)
-
-	s.logger.Info("Calling Start()", "process", name)
-	if err := proc.Start(); err != nil {
-		s.logger.Error("Failed to start process", "process", name, "error", err)
-		return fmt.Errorf("failed to start process: %w", err)
-	}
-
-	s.processes[name] = proc
-	s.logger.Info("Process started", "process", name, "pid", proc.GetPID())
-	return nil
-}
-
-// StopProcess stops a specific process
+// StopProcess marks a process as unwanted and waits for it to stop
 func (s *Server) StopProcess(name string) error {
-	s.logger.Info("Stopping process", "process", name)
+	s.logger.Info("Stop requested", "process", name)
 
-	s.processMutex.Lock()
-	defer s.processMutex.Unlock()
-
-	proc, exists := s.processes[name]
-	if !exists {
-		s.logger.Warn("Process not found", "process", name)
-		return fmt.Errorf("process %s not found", name)
-	}
-
-	currentState := proc.GetState()
-	s.logger.Info("Current process state", "process", name, "state", currentState, "pid", proc.GetPID())
-
-	s.logger.Info("Calling Stop()", "process", name)
-	if err := proc.Stop(); err != nil {
-		s.logger.Error("Error stopping process", "process", name, "error", err)
+	if err := s.setDesired(name, DesiredStopped); err != nil {
 		return err
 	}
+	s.requestReconcile()
 
-	s.logger.Info("Process stopped successfully", "process", name)
-	return nil
+	return s.awaitState(name, func(state process.State) bool {
+		return state == process.StateStopped
+	})
 }
 
-// RestartProcess restarts a specific process
+// RestartProcess stops a process and starts it again
 func (s *Server) RestartProcess(name string) error {
-	s.logger.Info("Restarting process", "process", name)
+	s.logger.Info("Restart requested", "process", name)
+
 	if err := s.StopProcess(name); err != nil {
-		s.logger.Error("Error stopping process during restart", "process", name, "error", err)
 		return err
 	}
-	s.logger.Info("Waiting 100ms before restarting", "process", name)
-	time.Sleep(pollInterval)
-	s.logger.Info("Starting after restart", "process", name)
 	return s.StartProcess(name)
-}
-
-// Reload reloads the configuration
-func (s *Server) Reload() error {
-	// For now, just validate the current config
-	// Full reload would require stopping and restarting processes
-	return s.config.Validate()
 }
 
 // GetStatus returns the status of all processes
@@ -409,102 +331,83 @@ func (s *Server) onProcessStateChange(name string, prevState, newState process.S
 	if prevState != newState {
 		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
+	s.markStateDirty()
+
+	// A dependency reaching RUNNING is what unblocks everything behind it, so
+	// reconcile now rather than waiting up to a tick for it.
+	s.requestReconcile()
 }
 
-// onDependencyStop is called when a dependency stops
-func (s *Server) onDependencyStop(name string) {
-	// This is handled in onProcessStateChange
-}
-
-// monitorProcesses monitors all processes
-func (s *Server) monitorProcesses() {
-	ticker := time.NewTicker(monitorInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Periodic health checks could be added here
-		case <-s.stopChan:
-			return
-		}
-	}
-}
-
-// setupSignalHandling sets up signal handling for graceful shutdown
+// setupSignalHandling installs the daemon's signal handlers
 func (s *Server) setupSignalHandling() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, signalBuffer)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
-	go func() {
-		sig := <-sigChan
-		s.logger.Info("Received signal to stop supavisor", "signal", sig.String())
-		if err := s.Stop(); err != nil {
-			s.logger.Error("failed to stop supavisor", "error", err)
-		}
-		os.Exit(0)
-	}()
+	go s.handleSignals(sigChan)
 }
 
-// checkIfRunning checks if another instance is already running
-func (s *Server) checkIfRunning() error {
-	// Check if PID file exists and process is running
-	if s.config.Supavisor.PidFile != "" {
-		if data, err := os.ReadFile(s.config.Supavisor.PidFile); err == nil {
-			var pid int
-			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
-				// Check if process is still running
-				if proc, err := os.FindProcess(pid); err == nil {
-					// Send signal 0 to check if process exists
-					if err := proc.Signal(syscall.Signal(0)); err == nil {
-						return fmt.Errorf("supavisor is already running (PID: %d)", pid)
-					}
-				}
+// handleSignals runs for the life of the daemon.
+//
+// It keeps reading rather than acting once and exiting, because installing a
+// handler replaces the default disposition: a second SIGTERM sent to a
+// shutdown that is taking too long would otherwise be swallowed, leaving
+// SIGKILL as the only way out.
+func (s *Server) handleSignals(sigChan chan os.Signal) {
+	shuttingDown := false
+
+	for sig := range sigChan {
+		switch sig {
+		case syscall.SIGHUP:
+			s.logger.Info("Received SIGHUP, reloading configuration")
+			if err := s.Reload(); err != nil {
+				s.logger.Error("failed to reload configuration", "error", err)
 			}
-			// PID file exists but process is not running - this is a stale file
-			return fmt.Errorf("found stale PID file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs", //nolint:lll
-				s.config.Supavisor.PidFile)
+
+		default:
+			if shuttingDown {
+				s.logger.Warn("Received a second stop signal, exiting immediately", "signal", sig.String())
+				os.Exit(exitInterrupted)
+			}
+
+			shuttingDown = true
+			s.logger.Info("Received signal to stop supavisor", "signal", sig.String())
+
+			go func() {
+				code := exitOK
+				if err := s.Stop(); err != nil {
+					s.logger.Error("failed to stop supavisor", "error", err)
+					code = exitFailed
+				}
+				os.Exit(code)
+			}()
 		}
 	}
-
-	// Check if socket is in use
-	if s.config.Supavisor.Socket != "" {
-		if _, err := os.Stat(s.config.Supavisor.Socket); err == nil {
-			// Try to connect to see if it's actually in use
-			conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
-			if err == nil {
-				defer syscall.Close(conn)
-				addr := &syscall.SockaddrUnix{Name: s.config.Supavisor.Socket}
-				if err := syscall.Connect(conn, addr); err == nil {
-					return fmt.Errorf("supavisor socket is already in use: %s", s.config.Supavisor.Socket)
-				}
-			}
-			// Socket file exists but not in use - this is a stale file
-			return fmt.Errorf("found stale socket file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs", //nolint:lll
-				s.config.Supavisor.Socket)
-		}
-	}
-
-	return nil
 }
 
-// writePIDFile writes the PID file
-func (s *Server) writePIDFile() error {
+// lockPIDFile takes the exclusive PID file lock for this daemon
+func (s *Server) lockPIDFile() error {
 	if s.config.Supavisor.PidFile == "" {
+		s.logger.Warn("No pidfile configured: nothing prevents a second instance from starting")
 		return nil
 	}
 
-	pid := os.Getpid()
-	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0o600)
+	lock, err := acquirePIDLock(s.config.Supavisor.PidFile)
+	if err != nil {
+		return err
+	}
+	s.pidLock = lock
+	return nil
 }
 
-// removePIDFile removes the PID file
-func (s *Server) removePIDFile() {
-	if s.config.Supavisor.PidFile != "" {
-		if err := os.Remove(s.config.Supavisor.PidFile); err != nil {
-			s.logger.Warn("failed to remove PID file", "error", err)
-		}
+// releasePIDFile drops the PID file lock and removes the file
+func (s *Server) releasePIDFile() {
+	if s.pidLock == nil {
+		return
 	}
+	if err := s.pidLock.Release(); err != nil {
+		s.logger.Warn("failed to release PID file", "error", err)
+	}
+	s.pidLock = nil
 }
 
 // formatDuration formats a duration as a human-readable string

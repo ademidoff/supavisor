@@ -57,6 +57,7 @@ linters:
         - dupImport
         - ifElseChain
         - octalLiteral
+        - unnamedResult
         - whyNoLint
         - wrapperFunc
       enabled-tags:
