@@ -40,7 +40,9 @@ type Server struct {
 	dependencyGraph *dependency.Graph
 	ipcServer       *IPCServer
 	pidLock         *pidLock
+	stateDirty      chan struct{}
 	stopChan        chan struct{}
+	stateFile       string
 	processMutex    sync.RWMutex
 	running         bool
 }
@@ -73,6 +75,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		processes:       make(map[string]*process.Process),
 		dependencyGraph: graph,
 		stopChan:        make(chan struct{}),
+		stateDirty:      make(chan struct{}, 1),
+		stateFile:       stateFilePath(cfg.Supavisor.PidFile),
 	}, nil
 }
 
@@ -88,6 +92,10 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	// Holding the lock means no other daemon is running, so anything still
+	// alive from a previous one is an orphan of a crash.
+	s.reapOrphans()
+
 	s.running = true
 
 	// Start IPC server
@@ -100,6 +108,8 @@ func (s *Server) Start() error {
 
 	// Setup signal handling
 	s.setupSignalHandling()
+
+	go s.recordStateChanges()
 
 	s.logger.Info("IPC server started", "socket", s.config.Supavisor.Socket)
 	s.logger.Info("Starting processes...")
@@ -141,6 +151,12 @@ func (s *Server) Stop() error {
 		if err := s.ipcServer.Stop(); err != nil {
 			s.logger.Error("failed to stop IPC server", "error", err)
 		}
+	}
+
+	// Everything was stopped deliberately, so there is nothing for the next
+	// daemon to reap.
+	if s.stateFile != "" {
+		s.clearStateFile()
 	}
 
 	s.releasePIDFile()
@@ -407,6 +423,7 @@ func (s *Server) onProcessStateChange(name string, prevState, newState process.S
 	if prevState != newState {
 		s.logger.Info("Process state changed", "process", name, "prev_state", prevState, "new_state", newState)
 	}
+	s.markStateDirty()
 }
 
 // onDependencyStop is called when a dependency stops

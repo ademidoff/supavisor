@@ -88,6 +88,8 @@ nohup ./supavisor -c supavisor.yml &
 - On shutdown supavisor removes its PID file and socket only if those paths still
   refer to the files it created, so a slow shutdown can never delete the files of
   a daemon that has already replaced it.
+- Processes that outlive a supavisor crash are stopped when supavisor next starts.
+  See [Recovering from a crash](#recovering-from-a-crash).
 
 3. Use the CLI tool to manage processes:
 
@@ -212,6 +214,32 @@ Each program is defined under `programs` with its name as the key:
 `sctl stop` always ends in `STOPPED`, including for a process that had already
 exited or reached `FATAL` on its own. Stopping a process that is waiting out a
 restart backoff cancels that pending restart.
+
+## Recovering from a crash
+
+If supavisor is killed rather than shut down, the processes it manages keep
+running: they are reparented to init and nothing supervises them any more.
+Starting supavisor again would otherwise add a second copy of every program.
+
+Supavisor therefore records the processes it owns in a state file next to its PID
+file (`/var/run/supavisor.pid` is tracked by `/var/run/supavisor.state`), and on
+startup stops anything from that file that is still running before starting
+anything of its own. Survivors are sent `SIGTERM`, and `SIGKILL` if they have not
+exited within five seconds. Recovery needs no operator intervention.
+
+Supavisor stops these processes rather than adopting them because they are no
+longer its children: it cannot wait on them, so it could neither collect their
+exit status nor notice them exiting.
+
+A recorded PID is only acted on if the process running under it is still the one
+supavisor started. PIDs get reused, so each record also stores the process's start
+time; if it does not match, the PID now belongs to something unrelated and is left
+alone. This check needs a way to read a process's start time, which supavisor
+implements for Linux and macOS. On any other platform recorded processes are left
+running rather than risking killing the wrong one.
+
+The state file is removed on a clean shutdown, so it only ever has contents to act
+on after a crash.
 
 ## Process groups
 
