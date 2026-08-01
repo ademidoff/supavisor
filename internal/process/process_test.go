@@ -32,7 +32,7 @@ func TestSetupLogFiles_SharedStdoutStderr(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	proc := NewProcess(cfg, logger)
-	err := proc.setupLogFiles()
+	err := proc.setupLogFiles(t.Context())
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestSetupLogFiles_SeparateStdoutStderr(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	proc := NewProcess(cfg, logger)
-	err := proc.setupLogFiles()
+	err := proc.setupLogFiles(t.Context())
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestSetupLogFiles_OnlyStdout(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	proc := NewProcess(cfg, logger)
-	err := proc.setupLogFiles()
+	err := proc.setupLogFiles(t.Context())
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestCloseLogFiles_SharedFile(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	proc := NewProcess(cfg, logger)
-	err := proc.setupLogFiles()
+	err := proc.setupLogFiles(t.Context())
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestCloseLogFiles_SeparateFiles(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	proc := NewProcess(cfg, logger)
-	err := proc.setupLogFiles()
+	err := proc.setupLogFiles(t.Context())
 	if err != nil {
 		t.Fatalf("setupLogFiles() failed: %v", err)
 	}
@@ -282,19 +282,119 @@ func TestExponentialBackoff(t *testing.T) {
 		{6, 30 * time.Second},  // 2^5 = 32s, capped at 30s
 		{7, 30 * time.Second},  // 2^6 = 64s, capped at 30s
 		{10, 30 * time.Second}, // 2^9 = 512s, capped at 30s
+		// An unclamped shift overflows int here and yields a zero backoff,
+		// which turns the restart policy into a tight loop.
+		{63, 30 * time.Second},
+		{64, 30 * time.Second},
+		{1000, 30 * time.Second},
 	}
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("restartCount_%d", tt.restartCount), func(t *testing.T) {
-			// Calculate backoff using the same logic as in process.go
-			backoff := time.Duration(1<<uint(tt.restartCount-1)) * time.Second
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
-
+			backoff := backoffDuration(tt.restartCount)
 			if backoff != tt.expected {
 				t.Errorf("restartCount %d: expected backoff %v, got %v", tt.restartCount, tt.expected, backoff)
 			}
 		})
+	}
+}
+
+// TestRestartAfterStop guards against reusing a canceled context across runs,
+// which made a process permanently unstartable once it had been stopped.
+func TestRestartAfterStop(t *testing.T) {
+	logDir := t.TempDir()
+	cfg := &config.ProgramConfig{
+		Name:          "test",
+		Command:       "/bin/sleep 60",
+		Autorestart:   config.RestartNever,
+		StartSecs:     1,
+		MaxRestarts:   3,
+		StdoutLogfile: filepath.Join(logDir, "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	if err := proc.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+
+	if err := proc.Restart(); err != nil {
+		t.Fatalf("Restart() after Stop() failed: %v", err)
+	}
+	if state := proc.GetState(); state == StateFatal {
+		t.Errorf("Expected process to restart, got state: %v", state)
+	}
+}
+
+// TestStartWithoutLogfileGivesChildDevNull guards against handing the child a
+// closed descriptor, which makes every write to stdout fail with EBADF.
+func TestStartWithoutLogfileGivesChildDevNull(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "wrote-ok")
+	cfg := &config.ProgramConfig{
+		Name: "test",
+		// Touches the marker only if writing to stdout succeeded
+		Command:     fmt.Sprintf("/bin/sh -c 'echo hello && touch %s'", marker),
+		Autorestart: config.RestartNever,
+		StartSecs:   1,
+		MaxRestarts: 3,
+		Environment: make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	time.Sleep(500 * time.Millisecond)
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("Child could not write to stdout when no logfile is configured: %v", err)
+	}
+}
+
+// TestStopCancelsPendingRestart guards against a stop being defeated by a
+// restart already queued in the monitor's backoff window.
+func TestStopCancelsPendingRestart(t *testing.T) {
+	logDir := t.TempDir()
+	cfg := &config.ProgramConfig{
+		Name:          "test",
+		Command:       "/bin/sh -c 'exit 3'",
+		Autorestart:   config.RestartAlways,
+		StartSecs:     1,
+		MaxRestarts:   6,
+		StdoutLogfile: filepath.Join(logDir, "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	// Let it exit and enter the restart backoff
+	time.Sleep(500 * time.Millisecond)
+
+	if err := proc.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+	if state := proc.GetState(); state != StateStopped {
+		t.Errorf("Expected STOPPED after Stop(), got: %v", state)
+	}
+
+	countAfterStop := proc.GetRestartCount()
+	time.Sleep(3 * time.Second)
+
+	if got := proc.GetRestartCount(); got != countAfterStop {
+		t.Errorf("Process restarted after Stop() reported success: restart count %d -> %d", countAfterStop, got)
+	}
+	if state := proc.GetState(); state != StateStopped {
+		t.Errorf("Expected process to stay STOPPED, got: %v", state)
 	}
 }

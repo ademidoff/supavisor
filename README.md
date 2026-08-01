@@ -120,8 +120,14 @@ Options:
 ### sctl
 
 ```bash
-./sctl <command> [process-name]
+./sctl [options] <command> [process-name]
 ```
+
+Options must be given before the command; `sctl -s /run/supavisor.sock status`
+works, `sctl status -s /run/supavisor.sock` is rejected.
+
+Options:
+- `-s, -socket <path>`: Path to supavisor socket (default: `/tmp/supavisor.sock`)
 
 Commands:
 - `status`: Show status of all processes
@@ -170,10 +176,13 @@ Each program is defined under `programs` with its name as the key:
 - `autostart`: Start process automatically on supavisor startup (default: true)
 - `autorestart`: Restart policy - `always`, `never`, or `unexpected` (default: unexpected)
 - `startsecs`: Seconds to wait before considering start successful (default: 1)
-- `max_restarts`: Maximum number of restarts before giving up (default: 3)
+- `max_restarts`: Maximum number of *consecutive* restarts before giving up (default: 3).
+  See [Restart behavior](#restart-behavior) for how the counter is reset.
 - `depends_on`: List of program names that must be running first
-- `stdout_logfile`: Path to stdout log file
-- `stderr_logfile`: Path to stderr log file
+- `stdout_logfile`: Path to stdout log file. If omitted, the process's stdout is
+  discarded (connected to `/dev/null`).
+- `stderr_logfile`: Path to stderr log file. If omitted, the process's stderr is
+  discarded (connected to `/dev/null`).
 - `stdout_logfile_maxbytes`: Maximum size before rotation (supports KB, MB, GB suffixes, default: 50MB)
 - `stdout_logfile_backups`: Number of rotated logs to keep (default: 10)
 - `stdout_logfile_maxage`: Days to keep rotated logs (0 = no limit, default: 0)
@@ -193,6 +202,22 @@ Each program is defined under `programs` with its name as the key:
 - `STOPPING`: Process is being stopped (transitional state)
 - `EXITED`: Process exited on its own (completed normally or crashed)
 - `FATAL`: Process failed to start after all retries
+
+`sctl stop` always ends in `STOPPED`, including for a process that had already
+exited or reached `FATAL` on its own. Stopping a process that is waiting out a
+restart backoff cancels that pending restart.
+
+## Restart behavior
+
+When a process exits on its own and its `autorestart` policy calls for a restart,
+supavisor waits before starting it again, doubling the delay on each consecutive
+attempt: 1s, 2s, 4s, 8s, 16s, then 30s for every attempt after that.
+
+The consecutive-restart counter is compared against `max_restarts`; exceeding it
+puts the process in `FATAL`. The counter is reset to zero whenever a run lasts at
+least 60 seconds, so `max_restarts` bounds crash loops rather than the total number
+of restarts over the lifetime of the daemon. A process that is restarted once a
+week will not eventually reach `FATAL`.
 
 ## Dependency Management
 
