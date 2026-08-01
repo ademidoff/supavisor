@@ -323,6 +323,12 @@ Other behaviour:
   waiting on a dependency starts as soon as that dependency is up, with no second
   command needed.
 
+Shutdown runs the same relationships in reverse: programs are stopped from the
+outermost dependents inwards, so nothing is pulled out from under something still
+using it. Programs that do not depend on each other are stopped at the same time,
+so total shutdown time is bounded by the slowest tier rather than by the sum of
+every program's `stopwaitsecs`.
+
 Circular dependencies are detected and rejected during configuration validation.
 
 ## Log Rotation

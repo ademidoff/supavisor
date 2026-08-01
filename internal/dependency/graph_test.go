@@ -133,3 +133,56 @@ func indexOf(slice []string, item string) int {
 func contains(slice []string, item string) bool {
 	return indexOf(slice, item) != -1
 }
+
+func TestTiers(t *testing.T) {
+	g := NewGraph()
+	g.AddNode("db", nil)
+	g.AddNode("cache", nil)
+	g.AddNode("api", []string{"db", "cache"})
+	g.AddNode("worker", []string{"api"})
+
+	tiers, err := g.Tiers()
+	if err != nil {
+		t.Fatalf("Tiers failed: %v", err)
+	}
+
+	expected := [][]string{{"cache", "db"}, {"api"}, {"worker"}}
+	if len(tiers) != len(expected) {
+		t.Fatalf("Expected %d tiers, got %d: %v", len(expected), len(tiers), tiers)
+	}
+	for i := range expected {
+		if len(tiers[i]) != len(expected[i]) {
+			t.Fatalf("Tier %d = %v, expected %v", i, tiers[i], expected[i])
+		}
+		for j := range expected[i] {
+			if tiers[i][j] != expected[i][j] {
+				t.Errorf("Tier %d = %v, expected %v", i, tiers[i], expected[i])
+			}
+		}
+	}
+}
+
+func TestTiers_DetectsCycles(t *testing.T) {
+	g := NewGraph()
+	g.AddNode("a", []string{"b"})
+	g.AddNode("b", []string{"a"})
+
+	if _, err := g.Tiers(); err == nil {
+		t.Error("Expected a circular dependency error")
+	}
+}
+
+func TestTiers_IndependentNodesShareATier(t *testing.T) {
+	g := NewGraph()
+	g.AddNode("a", nil)
+	g.AddNode("b", nil)
+	g.AddNode("c", nil)
+
+	tiers, err := g.Tiers()
+	if err != nil {
+		t.Fatalf("Tiers failed: %v", err)
+	}
+	if len(tiers) != 1 || len(tiers[0]) != 3 {
+		t.Errorf("Independent nodes should share one tier, got %v", tiers)
+	}
+}

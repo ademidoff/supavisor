@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -300,5 +301,96 @@ func TestReconcile_ReportsTheRootCauseOfABlockedStart(t *testing.T) {
 	// db is two levels down, and is the program that actually needs attention.
 	if !strings.Contains(err.Error(), "db") {
 		t.Errorf("Error should name the root cause db, got: %v", err)
+	}
+}
+
+// TestStop_IsParallelWithinATier guards the shutdown budget. Stopping serially
+// cost stopwaitsecs per unresponsive process, so a handful of them exceeded
+// systemd's TimeoutStopSec and the daemon was killed with its processes still
+// running.
+func TestStop_IsParallelWithinATier(t *testing.T) {
+	ignoresTerm := "/bin/sh -c 'trap \"\" TERM INT; while true; do sleep 0.1; done'"
+	stubborn := func() *config.ProgramConfig {
+		return &config.ProgramConfig{
+			Command: ignoresTerm, Autostart: true, Autorestart: config.RestartNever,
+			StartSecs: 1, StopWaitSecs: 2, StopSignal: syscall.SIGTERM, MaxRestarts: 1,
+		}
+	}
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"a": stubborn(), "b": stubborn(), "c": stubborn(),
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		waitForState(t, sv, name, process.StateRunning, 10*time.Second)
+	}
+
+	started := time.Now()
+	if err := sv.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	// Serially this would be 3 x stopwaitsecs; in parallel it is one.
+	if elapsed > 5*time.Second {
+		t.Errorf("Shutdown took %v, which is serial rather than parallel", elapsed)
+	}
+}
+
+// TestStop_WorksInwardsFromDependents checks shutdown order: stopping a
+// database before the programs using it is the wrong way round, and map
+// iteration order used to decide.
+func TestStop_WorksInwardsFromDependents(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "sv-order")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	orderFile := filepath.Join(tmpDir, "order")
+
+	// Each program records its name when it is asked to stop
+	recordOnTerm := func(name string) string {
+		return "/bin/sh -c 'trap \"echo " + name + " >> " + orderFile + "; exit 0\" TERM; while true; do sleep 0.1; done'"
+	}
+
+	recorder := func(name string, dependsOn []string) *config.ProgramConfig {
+		return &config.ProgramConfig{
+			Command: recordOnTerm(name), Autostart: true, Autorestart: config.RestartNever,
+			DependsOn: dependsOn, StartSecs: 1, StopWaitSecs: 5,
+			StopSignal: syscall.SIGTERM, MaxRestarts: 1,
+		}
+	}
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"db":     recorder("db", nil),
+		"api":    recorder("api", []string{"db"}),
+		"worker": recorder("worker", []string{"api"}),
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	for _, name := range []string{"db", "api", "worker"} {
+		waitForState(t, sv, name, process.StateRunning, 20*time.Second)
+	}
+
+	if err := sv.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	recorded, err := os.ReadFile(orderFile)
+	if err != nil {
+		t.Fatalf("Failed to read stop order: %v", err)
+	}
+	got := strings.Fields(string(recorded))
+	want := []string{"worker", "api", "db"}
+	if len(got) != len(want) {
+		t.Fatalf("Expected all 3 programs to record a stop, got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Stopped in order %v, expected %v", got, want)
+		}
 	}
 }

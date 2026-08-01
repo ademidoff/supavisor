@@ -161,16 +161,7 @@ func (s *Server) Stop() error {
 	<-s.reconcileDone
 	s.actions.Wait()
 
-	// Stop all processes
-	s.processMutex.Lock()
-	processCount := len(s.processes)
-	s.logger.Info("Stopping processes...", "count", processCount)
-	for _, proc := range s.processes {
-		if err := proc.Stop(); err != nil {
-			s.logger.Warn("failed to stop process", "error", err)
-		}
-	}
-	s.processMutex.Unlock()
+	s.stopAllProcesses()
 
 	// Stop IPC server
 	if s.ipcServer != nil {
@@ -190,6 +181,44 @@ func (s *Server) Stop() error {
 
 	s.logger.Info("Supavisor daemon stopped")
 	return nil
+}
+
+// stopAllProcesses stops every process, working from the outermost dependents
+// inwards and stopping each tier in parallel.
+//
+// Stopping serially cost stopwaitsecs for every process that does not exit on
+// its stop signal, so a handful of them was enough to exceed systemd's
+// TimeoutStopSec and have the daemon killed with its processes still running.
+// Order matters as well: stopping a database before the programs using it is
+// the wrong way round.
+func (s *Server) stopAllProcesses() {
+	tiers, err := s.dependencyGraph.Tiers()
+	if err != nil {
+		s.logger.Warn("Failed to order shutdown, stopping everything at once", "error", err)
+		tiers = [][]string{s.programNames()}
+	}
+
+	for tier := len(tiers) - 1; tier >= 0; tier-- {
+		names := tiers[tier]
+		s.logger.Info("Stopping processes", "tier", tier, "count", len(names), "processes", names)
+
+		var wg sync.WaitGroup
+		for _, name := range names {
+			proc := s.process(name)
+			if proc == nil {
+				continue
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if stopErr := proc.Stop(); stopErr != nil {
+					s.logger.Warn("failed to stop process", "process", name, "error", stopErr)
+				}
+			}()
+		}
+		wg.Wait()
+	}
 }
 
 // StartProcess marks a process as wanted and reports whether it came up
