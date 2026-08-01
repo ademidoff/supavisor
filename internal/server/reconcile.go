@@ -135,7 +135,11 @@ func (s *Server) dependenciesSatisfied(name string) (satisfied bool, reason stri
 	return true, ""
 }
 
-// programNames returns configured program names in a stable order
+// programNames returns configured program names ordered by priority, lowest
+// first, with names breaking ties so the order is stable.
+//
+// Dependencies still decide what may start; priority only settles the order
+// among programs that are all ready at the same moment.
 func (s *Server) programNames() []string {
 	s.processMutex.RLock()
 	defer s.processMutex.RUnlock()
@@ -144,7 +148,14 @@ func (s *Server) programNames() []string {
 	for name := range s.processes {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+
+	sort.Slice(names, func(i, j int) bool {
+		a, b := s.config.Programs[names[i]], s.config.Programs[names[j]]
+		if a != nil && b != nil && a.Priority != b.Priority {
+			return a.Priority < b.Priority
+		}
+		return names[i] < names[j]
+	})
 	return names
 }
 

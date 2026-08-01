@@ -905,3 +905,27 @@ programs:
 		t.Errorf("Default stopsignal = %v, expected SIGTERM", cfg.Programs["c"].StopSignal)
 	}
 }
+
+// TestParseConfigFile_RejectsUserUntilImplemented guards against a silent
+// security surprise: `user: nobody` was parsed and ignored, so the program ran
+// as whatever supavisor runs as, typically root.
+func TestParseConfigFile_RejectsUserUntilImplemented(t *testing.T) {
+	content := `
+programs:
+  app:
+    command: /bin/true
+    user: nobody
+`
+	path := filepath.Join(t.TempDir(), "supavisor.yml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	_, err := ParseConfigFile(path)
+	if err == nil {
+		t.Fatal("Expected user to be rejected while it has no effect")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("Error should say the setting is unimplemented, got: %v", err)
+	}
+}

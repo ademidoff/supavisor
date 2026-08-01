@@ -310,6 +310,13 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		return nil, fmt.Errorf("invalid autorestart policy: %s (must be always, never, or unexpected)", restartPolicy)
 	}
 
+	// Accepting this and running the program as the daemon's user anyway would
+	// be a silent security surprise: a config asking for an unprivileged user
+	// would run as root.
+	if strings.TrimSpace(raw.User) != "" {
+		return nil, fmt.Errorf("user is not implemented: remove it, or run supavisor as %s", raw.User)
+	}
+
 	stopSignal, err := parseSignal(raw.StopSignal)
 	if err != nil {
 		return nil, err

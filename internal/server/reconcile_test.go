@@ -394,3 +394,39 @@ func TestStop_WorksInwardsFromDependents(t *testing.T) {
 		}
 	}
 }
+
+// TestPriorityOrdersReconciliation checks that priority is honored among
+// programs that are all ready at once. It used to be parsed and never used.
+func TestPriorityOrdersReconciliation(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"last":   {Command: "/bin/sleep 60", Autostart: true, Priority: 900, StartSecs: 1, MaxRestarts: 1},
+		"first":  {Command: "/bin/sleep 60", Autostart: true, Priority: 10, StartSecs: 1, MaxRestarts: 1},
+		"middle": {Command: "/bin/sleep 60", Autostart: true, Priority: 500, StartSecs: 1, MaxRestarts: 1},
+	})
+
+	got := sv.programNames()
+	want := []string{"first", "middle", "last"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Reconcile order %v, expected %v", got, want)
+		}
+	}
+}
+
+// TestProgramNamesIsStableWithoutPriorities keeps the order deterministic when
+// nothing distinguishes the programs.
+func TestProgramNamesIsStableWithoutPriorities(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"c": {Command: "/bin/sleep 60", Priority: 999, StartSecs: 1, MaxRestarts: 1},
+		"a": {Command: "/bin/sleep 60", Priority: 999, StartSecs: 1, MaxRestarts: 1},
+		"b": {Command: "/bin/sleep 60", Priority: 999, StartSecs: 1, MaxRestarts: 1},
+	})
+
+	got := sv.programNames()
+	want := []string{"a", "b", "c"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Order %v, expected %v", got, want)
+		}
+	}
+}

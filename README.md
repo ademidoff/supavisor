@@ -222,8 +222,13 @@ Each program is defined under `programs` with its name as the key:
 - `stderr_logfile_backups`: Number of rotated logs to keep (default: 10)
 - `stderr_logfile_maxage`: Days to keep rotated logs (default: 0)
 - `environment`: Map of environment variables (e.g., `APP_ENV: production`)
-- `user`: User to run process as (not implemented yet)
-- `priority`: Startup priority (lower numbers start first, default: 999)
+- `priority`: Order among programs that are ready to start at the same moment,
+  lower first (default: 999). Dependencies still decide what *may* start;
+  priority only settles ties between programs that are all ready.
+
+The `user` setting is not implemented. Rather than accept it and run the program
+as supavisor's own user anyway, a config that sets it is rejected at startup. Run
+supavisor itself as the intended user instead.
 
 ## Process States
 
