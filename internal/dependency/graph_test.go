@@ -89,22 +89,6 @@ func TestGraph_TopologicalSort(t *testing.T) {
 	}
 }
 
-func TestGraph_GetDependents(t *testing.T) {
-	g := NewGraph()
-	g.AddNode("a", []string{})
-	g.AddNode("b", []string{"a"})
-	g.AddNode("c", []string{"a"})
-
-	dependents := g.GetDependents("a")
-	if len(dependents) != 2 {
-		t.Errorf("Expected 2 dependents for 'a', got %d", len(dependents))
-	}
-
-	if !contains(dependents, "b") || !contains(dependents, "c") {
-		t.Errorf("Expected dependents to contain 'b' and 'c', got %v", dependents)
-	}
-}
-
 func TestGraph_GetDependencies(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("a", []string{})

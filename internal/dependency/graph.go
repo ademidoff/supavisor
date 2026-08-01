@@ -180,15 +180,6 @@ func (g *Graph) Tiers() ([][]string, error) {
 	return tiers, nil
 }
 
-// GetDependents returns all processes that depend on the given process
-func (g *Graph) GetDependents(name string) []string {
-	node, exists := g.nodes[name]
-	if !exists {
-		return []string{}
-	}
-	return node.Dependents
-}
-
 // GetDependencies returns all processes that the given process depends on
 func (g *Graph) GetDependencies(name string) []string {
 	node, exists := g.nodes[name]
@@ -196,19 +187,4 @@ func (g *Graph) GetDependencies(name string) []string {
 		return []string{}
 	}
 	return node.Dependencies
-}
-
-// HasNode checks if a node exists in the graph
-func (g *Graph) HasNode(name string) bool {
-	_, exists := g.nodes[name]
-	return exists
-}
-
-// AllNodes returns all node names in the graph
-func (g *Graph) AllNodes() []string {
-	nodes := make([]string, 0, len(g.nodes))
-	for name := range g.nodes {
-		nodes = append(nodes, name)
-	}
-	return nodes
 }

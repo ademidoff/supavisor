@@ -47,9 +47,8 @@ type Process struct {
 	config *config.ProgramConfig
 	logger *slog.Logger
 
-	// Callbacks, set once before the process is started
-	onStateChange    func(name string, prevState, newState State)
-	onDependencyStop func(name string)
+	// onStateChange is set once before the process is started
+	onStateChange func(name string, prevState, newState State)
 
 	cmd           *exec.Cmd
 	cancel        context.CancelFunc
@@ -92,11 +91,6 @@ func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 // SetStateChangeCallback sets a callback for state changes
 func (p *Process) SetStateChangeCallback(fn func(name string, prevState, newState State)) {
 	p.onStateChange = fn
-}
-
-// SetDependencyStopCallback sets a callback when a dependency stops
-func (p *Process) SetDependencyStopCallback(fn func(name string)) {
-	p.onDependencyStop = fn
 }
 
 // GetState returns the current state
