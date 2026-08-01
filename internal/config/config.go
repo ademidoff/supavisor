@@ -84,8 +84,11 @@ type ProgramConfig struct {
 
 // Config represents the complete configuration
 type Config struct {
-	Programs  map[string]*ProgramConfig
-	Supavisor SupavisorConfig
+	Programs map[string]*ProgramConfig
+	// SourcePath is the main config file this was read from, so that a reload
+	// knows where to look. It is empty for a configuration built in code.
+	SourcePath string
+	Supavisor  SupavisorConfig
 }
 
 // configFile represents the YAML config file structure
@@ -149,6 +152,8 @@ func ParseConfigFile(path string) (*Config, error) {
 		},
 		Programs: make(map[string]*ProgramConfig),
 	}
+
+	config.SourcePath = path
 
 	if err := mergePrograms(config.Programs, cfg.Programs, path, map[string]string{}); err != nil {
 		return nil, err

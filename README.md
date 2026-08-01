@@ -146,7 +146,7 @@ Commands:
 - `start <name>`: Start a specific process
 - `stop <name>`: Stop a specific process
 - `restart <name>`: Restart a specific process
-- `reload`: Reload configuration
+- `reload`: Re-read the configuration and apply what changed
 - `shutdown`: Shutdown supavisor daemon
 
 ## Configuration
@@ -246,6 +246,25 @@ started; those are reported as `STOPPED`.
 `sctl stop` always ends in `STOPPED`, including for a process that had already
 exited or reached `FATAL` on its own. Stopping a process that is waiting out a
 restart backoff cancels that pending restart.
+
+## Reloading configuration
+
+`sctl reload` re-reads the config file and its drop-in fragments and applies the
+difference:
+
+- Programs that are unchanged keep running and are not disturbed.
+- Programs that were removed are stopped and forgotten.
+- Programs that were added are started if they are set to autostart.
+- Programs whose definition changed are stopped and started again on the new one.
+
+A program that was deliberately stopped stays stopped, even if its definition
+changed: reload applies configuration, it does not override what an operator
+asked for.
+
+If the new configuration is invalid, the reload is refused and nothing changes,
+so a typo cannot take running programs down. Daemon-level settings (`pidfile`,
+`socket`, `socket_group`, `logfile`, `log_format`, `log_level`) are bound at
+startup; changing one is reported by name and needs a restart.
 
 ## Recovering from a crash
 

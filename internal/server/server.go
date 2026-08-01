@@ -49,6 +49,7 @@ type Server struct {
 	stopChan        chan struct{}
 	stateFile       string
 	actions         sync.WaitGroup
+	reloadMutex     sync.Mutex
 	processMutex    sync.RWMutex
 	running         bool
 }
@@ -63,11 +64,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("failed to create log directories: %w", err)
 	}
 
-	// Build dependency graph
-	graph := dependency.NewGraph()
-	for name, progConfig := range cfg.Programs {
-		graph.AddNode(name, progConfig.DependsOn)
-	}
+	graph := buildDependencyGraph(cfg)
 
 	// Verify no circular dependencies
 	if _, err := graph.TopologicalSort(); err != nil {
@@ -93,9 +90,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// the reconciler and the status command can see the whole set rather than
 	// only what has been started so far.
 	for name, progConfig := range cfg.Programs {
-		proc := process.NewProcess(progConfig, s.processLogger)
-		proc.SetStateChangeCallback(s.onProcessStateChange)
-		s.processes[name] = proc
+		s.processes[name] = s.newProcess(progConfig)
 
 		s.desired[name] = DesiredStopped
 		if progConfig.Autostart {
@@ -273,13 +268,6 @@ func (s *Server) RestartProcess(name string) error {
 		return err
 	}
 	return s.StartProcess(name)
-}
-
-// Reload reloads the configuration
-func (s *Server) Reload() error {
-	// For now, just validate the current config
-	// Full reload would require stopping and restarting processes
-	return s.config.Validate()
 }
 
 // GetStatus returns the status of all processes
