@@ -22,6 +22,17 @@ const (
 	orphanPollInterval = 100 * time.Millisecond
 )
 
+// processState is what a daemon records about the processes it owns, so that a
+// daemon starting after a crash can recognize what outlived it.
+type processState struct {
+	// BootID ties the records below to one boot. On Linux a process start time
+	// is measured in ticks since boot, so a recorded PID could otherwise match
+	// an unrelated process that happened to start at the same offset of a later
+	// boot, and supavisor would kill it.
+	BootID   string        `json:"boot_id"`
+	Children []childRecord `json:"children"`
+}
+
 // childRecord identifies one managed process well enough for a later daemon to
 // decide whether the process now holding that PID is the one we started.
 type childRecord struct {
@@ -41,8 +52,8 @@ func stateFilePath(pidFile string) string {
 
 // writeStateFile replaces the state file atomically, so a crash mid-write can
 // never leave a half-written record behind for the next daemon to act on.
-func writeStateFile(path string, records []childRecord) error {
-	data, err := json.Marshal(records)
+func writeStateFile(path, boot string, records []childRecord) error {
+	data, err := json.Marshal(processState{BootID: boot, Children: records})
 	if err != nil {
 		return fmt.Errorf("failed to encode process state: %w", err)
 	}
@@ -58,8 +69,8 @@ func writeStateFile(path string, records []childRecord) error {
 	return nil
 }
 
-// readStateFile returns the processes recorded by a previous daemon
-func readStateFile(path string) ([]childRecord, error) {
+// readStateFile returns what a previous daemon recorded
+func readStateFile(path string) (*processState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -68,11 +79,11 @@ func readStateFile(path string) ([]childRecord, error) {
 		return nil, fmt.Errorf("failed to read process state: %w", err)
 	}
 
-	var records []childRecord
-	if err := json.Unmarshal(data, &records); err != nil {
+	var state processState
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to decode process state %s: %w", path, err)
 	}
-	return records, nil
+	return &state, nil
 }
 
 // saveState records the processes supavisor currently owns, so that a daemon
@@ -97,7 +108,7 @@ func (s *Server) saveState() {
 	}
 	s.processMutex.RUnlock()
 
-	if err := writeStateFile(s.stateFile, records); err != nil {
+	if err := writeStateFile(s.stateFile, s.bootID, records); err != nil {
 		s.logger.Warn("failed to record process state", "error", err)
 	}
 }
@@ -135,16 +146,26 @@ func (s *Server) reapOrphans() {
 		return
 	}
 
-	records, err := readStateFile(s.stateFile)
+	state, err := readStateFile(s.stateFile)
 	if err != nil {
 		s.logger.Warn("failed to read previous process state", "error", err)
 		return
 	}
-	if len(records) == 0 {
+	if state == nil || len(state.Children) == 0 {
 		return
 	}
 
-	orphans := s.identifyOrphans(records)
+	// A PID recorded before a restart says nothing about what holds it now, and
+	// on Linux neither does the start time, since it is measured from boot.
+	// Killing on that basis could take out an unrelated process.
+	if s.bootID == "" || state.BootID != s.bootID {
+		s.logger.Info("Recorded processes belong to an earlier boot, leaving them alone",
+			"recorded_boot", state.BootID, "count", len(state.Children))
+		s.clearStateFile()
+		return
+	}
+
+	orphans := s.identifyOrphans(state.Children)
 	if len(orphans) == 0 {
 		s.clearStateFile()
 		return

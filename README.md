@@ -302,9 +302,17 @@ exit status nor notice them exiting.
 A recorded PID is only acted on if the process running under it is still the one
 supavisor started. PIDs get reused, so each record also stores the process's start
 time; if it does not match, the PID now belongs to something unrelated and is left
-alone. This check needs a way to read a process's start time, which supavisor
-implements for Linux and macOS. On any other platform recorded processes are left
-running rather than risking killing the wrong one.
+alone.
+
+Records are also tied to the boot they were made on. A start time on Linux is
+measured in ticks since boot, so it repeats every boot: without this, a state file
+that outlived a restart could match a PID against a process that merely started at
+the same offset of the current boot. Records from an earlier boot are discarded
+rather than acted on.
+
+Both checks need platform support, which supavisor implements for Linux and macOS.
+Anywhere else, recorded processes are left running rather than risking killing the
+wrong one.
 
 The state file is removed on a clean shutdown, so it only ever has contents to act
 on after a crash.

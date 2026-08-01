@@ -10,3 +10,9 @@ import "fmt"
 func processStartToken(pid int) (string, error) {
 	return "", fmt.Errorf("process identity is not available on %s", "this platform")
 }
+
+// bootID is unavailable here, which is moot: without processStartToken there is
+// nothing to reap in the first place.
+func bootID() (string, error) {
+	return "", fmt.Errorf("boot identity is not available on %s", "this platform")
+}

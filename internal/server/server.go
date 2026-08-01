@@ -56,6 +56,7 @@ type Server struct {
 	reconcileDone   chan struct{}
 	stopChan        chan struct{}
 	stateFile       string
+	bootID          string
 	actions         sync.WaitGroup
 	reloadMutex     sync.Mutex
 	processMutex    sync.RWMutex
@@ -93,6 +94,14 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		reconcileDone:   make(chan struct{}),
 		stateFile:       stateFilePath(cfg.Supavisor.PidFile),
 	}
+
+	// Recorded without failing startup over it: an unidentifiable boot only
+	// means orphan reaping is skipped, which is the safe direction.
+	boot, err := bootID()
+	if err != nil {
+		s.logger.Warn("Cannot identify this boot, processes surviving a crash will not be reaped", "error", err)
+	}
+	s.bootID = boot
 
 	// Every configured program gets a process up front, running or not, so that
 	// the reconciler and the status command can see the whole set rather than

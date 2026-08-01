@@ -13,9 +13,15 @@ import (
 
 func testServer(t *testing.T, stateFile string) *Server {
 	t.Helper()
+
+	boot, err := bootID()
+	if err != nil {
+		t.Fatalf("bootID failed: %v", err)
+	}
 	return &Server{
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 		stateFile: stateFile,
+		bootID:    boot,
 	}
 }
 
@@ -88,7 +94,7 @@ func TestStateFileRoundTrip(t *testing.T) {
 		{Name: "db", PID: 111, StartToken: "abc"},
 		{Name: "web", PID: 222, StartToken: "def"},
 	}
-	if err := writeStateFile(path, records); err != nil {
+	if err := writeStateFile(path, "boot-1", records); err != nil {
 		t.Fatalf("writeStateFile failed: %v", err)
 	}
 
@@ -96,23 +102,26 @@ func TestStateFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readStateFile failed: %v", err)
 	}
-	if len(got) != len(records) {
-		t.Fatalf("Expected %d records, got %d", len(records), len(got))
+	if got.BootID != "boot-1" {
+		t.Errorf("BootID = %s, expected boot-1", got.BootID)
+	}
+	if len(got.Children) != len(records) {
+		t.Fatalf("Expected %d records, got %d", len(records), len(got.Children))
 	}
 	for i := range records {
-		if got[i] != records[i] {
-			t.Errorf("Record %d = %+v, expected %+v", i, got[i], records[i])
+		if got.Children[i] != records[i] {
+			t.Errorf("Record %d = %+v, expected %+v", i, got.Children[i], records[i])
 		}
 	}
 }
 
 func TestReadStateFile_MissingIsNotAnError(t *testing.T) {
-	records, err := readStateFile(filepath.Join(t.TempDir(), "absent.state"))
+	state, err := readStateFile(filepath.Join(t.TempDir(), "absent.state"))
 	if err != nil {
 		t.Errorf("A missing state file should not be an error, got: %v", err)
 	}
-	if len(records) != 0 {
-		t.Errorf("Expected no records, got %d", len(records))
+	if state != nil {
+		t.Errorf("Expected no state, got %+v", state)
 	}
 }
 
@@ -164,11 +173,12 @@ func TestReapOrphans_StopsSurvivorsOfACrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processStartToken failed: %v", err)
 	}
-	if err := writeStateFile(statePath, []childRecord{{Name: "svc", PID: pid, StartToken: token}}); err != nil {
+	sv := testServer(t, statePath)
+	if err := writeStateFile(statePath, sv.bootID, []childRecord{{Name: "svc", PID: pid, StartToken: token}}); err != nil {
 		t.Fatalf("writeStateFile failed: %v", err)
 	}
 
-	testServer(t, statePath).reapOrphans()
+	sv.reapOrphans()
 
 	if !terminated() {
 		t.Errorf("Orphan %d survived reaping", pid)
@@ -185,12 +195,13 @@ func TestReapOrphans_LeavesAReusedPIDAlone(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "supavisor.state")
 	pid, _ := startTestChild(t)
 
-	// Same PID, but recorded against a different run.
-	if err := writeStateFile(statePath, []childRecord{{Name: "svc", PID: pid, StartToken: "from-an-earlier-boot"}}); err != nil {
+	// Same PID and the same boot, but recorded against a different run.
+	sv := testServer(t, statePath)
+	if err := writeStateFile(statePath, sv.bootID, []childRecord{{Name: "svc", PID: pid, StartToken: "a-different-run"}}); err != nil {
 		t.Fatalf("writeStateFile failed: %v", err)
 	}
 
-	testServer(t, statePath).reapOrphans()
+	sv.reapOrphans()
 
 	if !alive(pid) {
 		t.Errorf("Process %d was killed despite belonging to a different run", pid)
@@ -200,8 +211,9 @@ func TestReapOrphans_LeavesAReusedPIDAlone(t *testing.T) {
 func TestReapOrphans_IgnoresProcessesThatAlreadyExited(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "supavisor.state")
 
+	sv := testServer(t, statePath)
 	records := []childRecord{{Name: "svc", PID: 0x7FFFFFFF, StartToken: "gone"}}
-	if err := writeStateFile(statePath, records); err != nil {
+	if err := writeStateFile(statePath, sv.bootID, records); err != nil {
 		t.Fatalf("writeStateFile failed: %v", err)
 	}
 
@@ -209,7 +221,7 @@ func TestReapOrphans_IgnoresProcessesThatAlreadyExited(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		testServer(t, statePath).reapOrphans()
+		sv.reapOrphans()
 	}()
 
 	select {
@@ -226,4 +238,77 @@ func TestReapOrphans_IgnoresProcessesThatAlreadyExited(t *testing.T) {
 func TestReapOrphans_NoStateFileIsANoOp(t *testing.T) {
 	testServer(t, filepath.Join(t.TempDir(), "absent.state")).reapOrphans()
 	testServer(t, "").reapOrphans()
+}
+
+func TestBootID_IsStable(t *testing.T) {
+	first, err := bootID()
+	if err != nil {
+		t.Fatalf("bootID failed: %v", err)
+	}
+	if first == "" {
+		t.Fatal("Expected a non-empty boot id")
+	}
+
+	second, err := bootID()
+	if err != nil {
+		t.Fatalf("bootID failed on the second read: %v", err)
+	}
+	if second != first {
+		t.Errorf("Boot id changed between reads: %s then %s", first, second)
+	}
+}
+
+// TestReapOrphans_LeavesProcessesFromAnEarlierBootAlone is the guard against
+// killing an unrelated process after a reboot.
+//
+// A Linux start token is ticks since boot, so it repeats every boot: a recorded
+// PID could match a process that merely started at the same offset of a later
+// one. That is only reachable when the state file outlives the reboot, which
+// needs a pidfile on persistent storage rather than the default under /run.
+func TestReapOrphans_LeavesProcessesFromAnEarlierBootAlone(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "supavisor.state")
+	pid, _ := startTestChild(t)
+
+	token, err := processStartToken(pid)
+	if err != nil {
+		t.Fatalf("processStartToken failed: %v", err)
+	}
+
+	// Everything matches except the boot the record belongs to.
+	records := []childRecord{{Name: "svc", PID: pid, StartToken: token}}
+	if err := writeStateFile(statePath, "a-previous-boot", records); err != nil {
+		t.Fatalf("writeStateFile failed: %v", err)
+	}
+
+	testServer(t, statePath).reapOrphans()
+
+	if !alive(pid) {
+		t.Errorf("Process %d was killed on a record from an earlier boot", pid)
+	}
+	if _, err := os.Stat(statePath); err == nil {
+		t.Error("A state file from an earlier boot should have been discarded")
+	}
+}
+
+// TestReapOrphans_SkipsWhenTheBootCannotBeIdentified keeps the failure
+// direction safe: unable to verify means leave it alone, not kill it.
+func TestReapOrphans_SkipsWhenTheBootCannotBeIdentified(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "supavisor.state")
+	pid, _ := startTestChild(t)
+
+	token, err := processStartToken(pid)
+	if err != nil {
+		t.Fatalf("processStartToken failed: %v", err)
+	}
+	if err := writeStateFile(statePath, "", []childRecord{{Name: "svc", PID: pid, StartToken: token}}); err != nil {
+		t.Fatalf("writeStateFile failed: %v", err)
+	}
+
+	sv := testServer(t, statePath)
+	sv.bootID = ""
+	sv.reapOrphans()
+
+	if !alive(pid) {
+		t.Errorf("Process %d was killed although the boot could not be identified", pid)
+	}
 }

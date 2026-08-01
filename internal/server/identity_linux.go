@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// bootIDPath identifies the current boot. A process start time on Linux is
+// measured in ticks since boot, so it means nothing on its own once the machine
+// has restarted.
+const bootIDPath = "/proc/sys/kernel/random/boot_id"
+
 // startTimeField is the index of the process start time within /proc/<pid>/stat
 // once the fields before and including the command name have been dropped. The
 // start time is field 22 and the slice begins at field 3, so it sits at 19.
@@ -39,4 +44,19 @@ func processStartToken(pid int) (string, error) {
 		return "", fmt.Errorf("unrecognized /proc/%d/stat format", pid)
 	}
 	return fields[startTimeField], nil
+}
+
+// bootID identifies the running boot, so that process start times recorded
+// before a restart are recognizable as belonging to a different one.
+func bootID() (string, error) {
+	data, err := os.ReadFile(bootIDPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read boot id: %w", err)
+	}
+
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", fmt.Errorf("%s is empty", bootIDPath)
+	}
+	return id, nil
 }

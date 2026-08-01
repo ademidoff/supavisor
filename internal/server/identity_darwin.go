@@ -23,3 +23,15 @@ func processStartToken(pid int) (string, error) {
 	started := proc.Proc.P_starttime
 	return fmt.Sprintf("%d.%06d", started.Sec, started.Usec), nil
 }
+
+// bootID identifies the running boot. macOS reports process start times as
+// absolute wall clock, so this is not needed to tell one boot's PIDs from
+// another's, but recording it keeps the state file's meaning the same on both
+// platforms.
+func bootID() (string, error) {
+	booted, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return "", fmt.Errorf("failed to read boot time: %w", err)
+	}
+	return fmt.Sprintf("%d.%06d", booted.Sec, booted.Usec), nil
+}
