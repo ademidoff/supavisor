@@ -168,6 +168,17 @@ sibling drop-in directory named after the main file. For
 
 If the drop-in directory does not exist, supavisor simply loads the main file.
 
+### Configuration is strict
+
+Unknown keys are rejected. A misspelled setting such as `autorestrt: always` fails
+at startup and names the offending key, rather than being ignored and leaving the
+program running on defaults nobody chose.
+
+Settings whose zero value is meaningful distinguish "set to zero" from "not set":
+`max_restarts: 0` means never retry, `startsecs: 0` means treat the process as
+started immediately, and `stopwaitsecs: 0` means kill without waiting. Omitting a
+setting takes its default.
+
 ### supavisor section
 
 - `logfile`: Path to supavisor's own log file (optional)
@@ -203,7 +214,8 @@ Each program is defined under `programs` with its name as the key:
   discarded (connected to `/dev/null`).
 - `stderr_logfile`: Path to stderr log file. If omitted, the process's stderr is
   discarded (connected to `/dev/null`).
-- `stdout_logfile_maxbytes`: Maximum size before rotation (supports KB, MB, GB suffixes, default: 50MB)
+- `stdout_logfile_maxbytes`: Maximum size before rotation (supports KB, MB, GB suffixes, default: 50MB).
+  An unparseable size is a startup error, not a silent fallback to the default.
 - `stdout_logfile_backups`: Number of rotated logs to keep (default: 10)
 - `stdout_logfile_maxage`: Days to keep rotated logs (0 = no limit, default: 0)
 - `stderr_logfile_maxbytes`: Maximum size before rotation (default: 50MB)

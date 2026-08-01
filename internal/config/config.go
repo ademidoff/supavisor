@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -30,7 +33,19 @@ const (
 	defaultStopWaitSecs = 10
 
 	defaultLogFileBackups = 10
+	defaultStartSecs      = 1
+	defaultMaxRestarts    = 3
+	defaultPriority       = 999
 )
+
+// intOrDefault returns the configured value, treating an absent setting rather
+// than a zero one as "not configured".
+func intOrDefault(configured *int, fallback int) int {
+	if configured == nil {
+		return fallback
+	}
+	return *configured
+}
 
 // SupavisorConfig represents the main supavisor configuration
 type SupavisorConfig struct {
@@ -89,26 +104,30 @@ type supavisorFile struct {
 }
 
 type programFile struct {
-	Environment           map[string]string `yaml:"environment"`
-	Autostart             *bool             `yaml:"autostart"`
-	Command               string            `yaml:"command"`
-	Directory             string            `yaml:"directory"`
-	Autorestart           string            `yaml:"autorestart"`
-	StopSignal            string            `yaml:"stopsignal"`
-	StdoutLogfile         string            `yaml:"stdout_logfile"`
-	StderrLogfile         string            `yaml:"stderr_logfile"`
-	StdoutLogfileMaxBytes string            `yaml:"stdout_logfile_maxbytes"`
-	StderrLogfileMaxBytes string            `yaml:"stderr_logfile_maxbytes"`
-	User                  string            `yaml:"user"`
-	DependsOn             []string          `yaml:"depends_on"`
-	Priority              int               `yaml:"priority"`
-	StartSecs             int               `yaml:"startsecs"`
-	StopWaitSecs          int               `yaml:"stopwaitsecs"`
-	MaxRestarts           int               `yaml:"max_restarts"`
-	StdoutLogfileBackups  int               `yaml:"stdout_logfile_backups"`
-	StdoutLogfileMaxAge   int               `yaml:"stdout_logfile_maxage"`
-	StderrLogfileBackups  int               `yaml:"stderr_logfile_backups"`
-	StderrLogfileMaxAge   int               `yaml:"stderr_logfile_maxage"`
+	Environment map[string]string `yaml:"environment"`
+	Autostart   *bool             `yaml:"autostart"`
+
+	// Pointers so an explicit 0 is distinguishable from an absent setting:
+	// max_restarts: 0 means never retry, not "use the default of 3".
+	Priority             *int `yaml:"priority"`
+	StartSecs            *int `yaml:"startsecs"`
+	StopWaitSecs         *int `yaml:"stopwaitsecs"`
+	MaxRestarts          *int `yaml:"max_restarts"`
+	StdoutLogfileBackups *int `yaml:"stdout_logfile_backups"`
+	StdoutLogfileMaxAge  *int `yaml:"stdout_logfile_maxage"`
+	StderrLogfileBackups *int `yaml:"stderr_logfile_backups"`
+	StderrLogfileMaxAge  *int `yaml:"stderr_logfile_maxage"`
+
+	Command               string   `yaml:"command"`
+	Directory             string   `yaml:"directory"`
+	Autorestart           string   `yaml:"autorestart"`
+	StopSignal            string   `yaml:"stopsignal"`
+	StdoutLogfile         string   `yaml:"stdout_logfile"`
+	StderrLogfile         string   `yaml:"stderr_logfile"`
+	StdoutLogfileMaxBytes string   `yaml:"stdout_logfile_maxbytes"`
+	StderrLogfileMaxBytes string   `yaml:"stderr_logfile_maxbytes"`
+	User                  string   `yaml:"user"`
+	DependsOn             []string `yaml:"depends_on"`
 }
 
 // ParseConfigFile parses a single YAML configuration file. It does not look for
@@ -218,8 +237,17 @@ func parseConfigFileRaw(path string) (*configFile, error) {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
+	// Reject unknown keys rather than ignoring them: a typo in a setting that
+	// governs restarts or log rotation would otherwise be silently replaced by
+	// a default, and the program would run with behavior nobody asked for.
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+
 	var cfg configFile
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := decoder.Decode(&cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return &cfg, nil
+		}
 		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
 	return &cfg, nil
@@ -287,21 +315,17 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		return nil, err
 	}
 
-	startSecs := raw.StartSecs
-	if startSecs == 0 {
-		startSecs = 1
-	}
-	stopWaitSecs := raw.StopWaitSecs
-	if stopWaitSecs == 0 {
-		stopWaitSecs = defaultStopWaitSecs
-	}
-	maxRestarts := raw.MaxRestarts
-	if maxRestarts == 0 {
-		maxRestarts = 3
-	}
-	priority := raw.Priority
-	if priority == 0 {
-		priority = 999
+	startSecs := intOrDefault(raw.StartSecs, defaultStartSecs)
+	stopWaitSecs := intOrDefault(raw.StopWaitSecs, defaultStopWaitSecs)
+	maxRestarts := intOrDefault(raw.MaxRestarts, defaultMaxRestarts)
+	priority := intOrDefault(raw.Priority, defaultPriority)
+
+	for field, value := range map[string]int{
+		"startsecs": startSecs, "stopwaitsecs": stopWaitSecs, "max_restarts": maxRestarts,
+	} {
+		if value < 0 {
+			return nil, fmt.Errorf("invalid %s: %d (must not be negative)", field, value)
+		}
 	}
 
 	env := make(map[string]string)
@@ -309,7 +333,10 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		maps.Copy(env, raw.Environment)
 	}
 
-	logging := convertLogging(raw)
+	logging, err := convertLogging(raw)
+	if err != nil {
+		return nil, err
+	}
 
 	return &ProgramConfig{
 		Name:                  name,
@@ -328,10 +355,10 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		StderrLogfile:         raw.StderrLogfile,
 		StdoutLogfileMaxBytes: logging.stdoutMaxBytes,
 		StdoutLogfileBackups:  logging.stdoutBackups,
-		StdoutLogfileMaxAge:   raw.StdoutLogfileMaxAge,
+		StdoutLogfileMaxAge:   intOrDefault(raw.StdoutLogfileMaxAge, 0),
 		StderrLogfileMaxBytes: logging.stderrMaxBytes,
 		StderrLogfileBackups:  logging.stderrBackups,
-		StderrLogfileMaxAge:   raw.StderrLogfileMaxAge,
+		StderrLogfileMaxAge:   intOrDefault(raw.StderrLogfileMaxAge, 0),
 		User:                  raw.User,
 	}, nil
 }
@@ -344,27 +371,24 @@ type loggingDefaults struct {
 	stderrBackups  int
 }
 
-func convertLogging(raw *programFile) loggingDefaults {
-	l := loggingDefaults{
-		stdoutMaxBytes: parseBytes(raw.StdoutLogfileMaxBytes),
-		stderrMaxBytes: parseBytes(raw.StderrLogfileMaxBytes),
-		stdoutBackups:  raw.StdoutLogfileBackups,
-		stderrBackups:  raw.StderrLogfileBackups,
+func convertLogging(raw *programFile) (loggingDefaults, error) {
+	stdoutMaxBytes, err := parseBytes("stdout_logfile_maxbytes", raw.StdoutLogfileMaxBytes)
+	if err != nil {
+		return loggingDefaults{}, err
+	}
+	stderrMaxBytes, err := parseBytes("stderr_logfile_maxbytes", raw.StderrLogfileMaxBytes)
+	if err != nil {
+		return loggingDefaults{}, err
 	}
 
-	if l.stdoutMaxBytes == 0 {
-		l.stdoutMaxBytes = defaultLogFileMaxBytes
+	l := loggingDefaults{
+		stdoutMaxBytes: stdoutMaxBytes,
+		stderrMaxBytes: stderrMaxBytes,
+		stdoutBackups:  intOrDefault(raw.StdoutLogfileBackups, defaultLogFileBackups),
+		stderrBackups:  intOrDefault(raw.StderrLogfileBackups, defaultLogFileBackups),
 	}
-	if l.stderrMaxBytes == 0 {
-		l.stderrMaxBytes = defaultLogFileMaxBytes
-	}
-	if l.stdoutBackups == 0 {
-		l.stdoutBackups = defaultLogFileBackups
-	}
-	if l.stderrBackups == 0 {
-		l.stderrBackups = defaultLogFileBackups
-	}
-	return l
+
+	return l, nil
 }
 
 // stopSignals are the signals a program may be configured to stop on
@@ -399,37 +423,41 @@ func parseSignal(name string) (syscall.Signal, error) {
 	return sig, nil
 }
 
-// parseBytes parses a byte string like "10MB", "1GB", "500KB" into bytes
-func parseBytes(s string) int64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 50 * 1024 * 1024 // Default 50MB
+// parseBytes parses a byte string like "10MB", "1GB", "500KB" into bytes. An
+// empty value takes the default; anything unparseable is an error rather than a
+// silent fallback, so that a typo in a size limit cannot quietly become 50MB.
+func parseBytes(field, value string) (int64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultLogFileMaxBytes, nil
 	}
 
-	s = strings.ToUpper(s)
+	upper := strings.ToUpper(trimmed)
 	var multiplier int64 = 1
 
 	switch {
-	case strings.HasSuffix(s, "KB"):
+	case strings.HasSuffix(upper, "KB"):
 		multiplier = 1024
-		s = strings.TrimSuffix(s, "KB")
-	case strings.HasSuffix(s, "MB"):
+		upper = strings.TrimSuffix(upper, "KB")
+	case strings.HasSuffix(upper, "MB"):
 		multiplier = 1024 * 1024
-		s = strings.TrimSuffix(s, "MB")
-	case strings.HasSuffix(s, "GB"):
+		upper = strings.TrimSuffix(upper, "MB")
+	case strings.HasSuffix(upper, "GB"):
 		multiplier = 1024 * 1024 * 1024
-		s = strings.TrimSuffix(s, "GB")
-	case strings.HasSuffix(s, "B"):
-		multiplier = 1
-		s = strings.TrimSuffix(s, "B")
+		upper = strings.TrimSuffix(upper, "GB")
+	case strings.HasSuffix(upper, "B"):
+		upper = strings.TrimSuffix(upper, "B")
 	}
 
-	val, err := strconv.ParseInt(s, 10, 64)
+	val, err := strconv.ParseInt(strings.TrimSpace(upper), 10, 64)
 	if err != nil {
-		return 50 * 1024 * 1024 // Default on error
+		return 0, fmt.Errorf("invalid %s: %s (expected a byte count, optionally suffixed with KB, MB or GB)", field, value)
+	}
+	if val < 0 {
+		return 0, fmt.Errorf("invalid %s: %s (must not be negative)", field, value)
 	}
 
-	return val * multiplier
+	return val * multiplier, nil
 }
 
 // Validate validates the configuration
