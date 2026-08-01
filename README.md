@@ -211,6 +211,9 @@ Each program is defined under `programs` with its name as the key:
 - `EXITED`: Process exited on its own (completed normally or crashed)
 - `FATAL`: Process failed to start after all retries
 
+`sctl status` lists every configured program, including ones that have never been
+started; those are reported as `STOPPED`.
+
 `sctl stop` always ends in `STOPPED`, including for a process that had already
 exited or reached `FATAL` on its own. Stopping a process that is waiting out a
 restart backoff cancels that pending restart.
@@ -277,11 +280,41 @@ week will not eventually reach `FATAL`.
 
 ## Dependency Management
 
-Processes can depend on other processes using the `depends_on` option. The supavisor will:
+Supavisor works from a desired state for each program rather than from a fixed
+startup sequence. `autostart` sets the initial desired state, `sctl start` and
+`sctl stop` change it, and a reconcile loop continuously moves each program
+towards whatever its desired state currently is.
 
-1. Start processes in dependency order (topological sort)
-2. Ensure dependencies are running before starting dependent processes
-3. When a dependency stops (crashes or exits), it is restarted according to its `autorestart` policy. Dependent processes continue running.
+Dependencies fall out of that: a program is started once every entry in its
+`depends_on` is `RUNNING`, and until then it simply stays `STOPPED` and is
+reconsidered. Nothing is scheduled in advance, so a dependency that takes a long
+time to come up, or that is started by hand much later, does not strand the
+programs behind it:
+
+```yaml
+programs:
+  db:
+    command: /usr/bin/postgres
+    autostart: false   # started by hand, whenever
+  api:
+    command: /usr/bin/api
+    depends_on: [db]   # starts on its own once db is RUNNING
+```
+
+Other behaviour:
+
+- When a dependency stops or crashes, it is restarted according to its own
+  `autorestart` policy. Dependent processes keep running: supavisor does not
+  stop or restart them.
+- Restarts within a run are the `autorestart` policy's business, not the loop's.
+  A program that exited on its own, or that gave up after `max_restarts`, is left
+  alone rather than being started again by reconciliation.
+- `sctl start` waits for the outcome and reports it. If the program cannot start
+  because something it depends on will never come up, it says so immediately and
+  names the program actually responsible, however far down the chain it is.
+- A desired state persists: stopping a program keeps it stopped, and a program
+  waiting on a dependency starts as soon as that dependency is up, with no second
+  command needed.
 
 Circular dependencies are detected and rejected during configuration validation.
 

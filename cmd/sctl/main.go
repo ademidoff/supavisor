@@ -15,8 +15,15 @@ import (
 )
 
 const (
-	tabPadding     = 3
-	requestTimeout = 5 * time.Second
+	tabPadding = 3
+
+	// dialTimeout fails fast when the daemon is not listening.
+	dialTimeout = 5 * time.Second
+
+	// requestTimeout has to outlast a command's own work: stopping a process
+	// that ignores SIGINT takes the full graceful shutdown timeout before it is
+	// killed, and a start waits for the process to come up.
+	requestTimeout = 60 * time.Second
 )
 
 func main() {
@@ -147,7 +154,7 @@ func getInt(m map[string]any, key string) int {
 func sendRequest(socketPath, command string, args []string) (*api.Response, error) {
 	// Connect to supavisor with timeout
 	dialer := net.Dialer{
-		Timeout: requestTimeout,
+		Timeout: dialTimeout,
 	}
 	conn, err := dialer.Dial("unix", socketPath)
 	if err != nil {
@@ -156,7 +163,6 @@ func sendRequest(socketPath, command string, args []string) (*api.Response, erro
 	defer conn.Close()
 
 	// Set read and write deadlines to prevent hanging
-	// Use a shorter timeout for faster failure when daemon is not responding
 	deadline := time.Now().Add(requestTimeout)
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
