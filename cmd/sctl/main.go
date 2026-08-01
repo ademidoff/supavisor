@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -25,13 +26,24 @@ func main() {
 	flag.Usage = printUsage
 	flag.Parse()
 
-	if len(os.Args) < 2 {
+	if flag.NArg() == 0 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	command := os.Args[1]
-	args := os.Args[2:]
+	command := flag.Arg(0)
+	args := flag.Args()[1:]
+
+	// Go's flag package stops parsing at the first non-flag argument, so an
+	// option placed after the command would be silently ignored and we would
+	// talk to the default socket instead of the requested one.
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			fmt.Fprintf(os.Stderr, "Error: options must be given before the command: %s\n\n", arg)
+			printUsage()
+			os.Exit(1)
+		}
+	}
 
 	resp, err := sendRequest(socketPath, command, args)
 	if err != nil {
@@ -182,6 +194,6 @@ func printUsage() {
 	fmt.Println("  reload              Reload configuration")
 	fmt.Println("  shutdown            Shutdown supavisor")
 	fmt.Println()
-	fmt.Println("Options:")
+	fmt.Println("Options (must precede the command):")
 	fmt.Println("  -s, -socket PATH    Path to supavisor socket (default: /tmp/supavisor.sock)")
 }
