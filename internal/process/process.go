@@ -18,9 +18,8 @@ import (
 )
 
 const (
-	maxBackoffSeconds       = 30
-	gracefulShutdownTimeout = 5 * time.Second
-	restartWaitInterval     = 100 * time.Millisecond
+	maxBackoffSeconds   = 30
+	restartWaitInterval = 100 * time.Millisecond
 
 	// logDrainTimeout bounds how long we wait for a pipe to reach EOF after the
 	// process exits. A grandchild that inherited the descriptor keeps it open,
@@ -52,14 +51,15 @@ type Process struct {
 	onStateChange    func(name string, prevState, newState State)
 	onDependencyStop func(name string)
 
-	cmd         *exec.Cmd
-	cancel      context.CancelFunc
-	monitorDone chan struct{}
-	lastError   error
-	startTime   time.Time
-	stopTime    time.Time
-	state       State
-	streams     []*logStream
+	cmd           *exec.Cmd
+	cancel        context.CancelFunc
+	monitorDone   chan struct{}
+	stopRequested chan struct{}
+	lastError     error
+	startTime     time.Time
+	stopTime      time.Time
+	state         State
+	streams       []*logStream
 
 	// mu guards all mutable run state, from cmd down to stoppedExternally.
 	// The monitor goroutine writes it while the IPC path reads it.
@@ -214,6 +214,7 @@ func (p *Process) Start() error {
 	p.closeChildEnds()
 
 	monitorDone := make(chan struct{})
+	stopRequested := make(chan struct{})
 
 	p.mu.Lock()
 	p.cmd = cmd
@@ -221,13 +222,14 @@ func (p *Process) Start() error {
 	p.startTime = time.Now()
 	p.lastError = nil
 	p.monitorDone = monitorDone
+	p.stopRequested = stopRequested
 	p.stoppedExternally = false
 	pid := p.pid
 	p.mu.Unlock()
 
 	p.logger.Info("Started process", "pid", pid)
 
-	go p.monitor(ctx, cmd, monitorDone)
+	go p.monitor(ctx, cmd, monitorDone, stopRequested)
 	go p.waitForStartSuccess(ctx, cmd)
 
 	return nil
@@ -316,7 +318,17 @@ func (p *Process) Stop() error {
 	cancel := p.cancel
 	monitorDone := p.monitorDone
 	pid := p.pid
+	// Taking the channel makes sure it is closed exactly once, however many
+	// times Stop is called.
+	stopRequested := p.stopRequested
+	p.stopRequested = nil
 	p.mu.Unlock()
+
+	// Wake anything waiting out a restart backoff before doing anything else,
+	// so a stop is not held up by a delay that is about to be abandoned.
+	if stopRequested != nil {
+		close(stopRequested)
+	}
 
 	// Nothing is running in these states, but the monitor may be sitting in a
 	// restart backoff. Canceling the context is what actually stops it.
@@ -337,9 +349,9 @@ func (p *Process) Stop() error {
 		// Check the group is still alive before signaling: the process may have
 		// exited already, for instance on the parent's own SIGTERM.
 		if err := SignalGroup(pid, syscall.Signal(0)); err == nil {
-			p.logger.Info("Sending SIGINT to the process group for graceful shutdown")
-			if err := SignalGroup(pid, syscall.SIGINT); err != nil {
-				p.logger.Warn("Failed to send SIGINT", "error", err)
+			p.logger.Info("Signaling the process group for graceful shutdown", "signal", p.config.StopSignal)
+			if err := SignalGroup(pid, p.config.StopSignal); err != nil {
+				p.logger.Warn("Failed to send stop signal", "signal", p.config.StopSignal, "error", err)
 			}
 		}
 
@@ -347,7 +359,7 @@ func (p *Process) Stop() error {
 			select {
 			case <-monitorDone:
 				p.logger.Info("Process exited gracefully")
-			case <-time.After(gracefulShutdownTimeout):
+			case <-time.After(time.Duration(p.config.StopWaitSecs) * time.Second):
 				p.logger.Info("Graceful shutdown timeout, sending SIGKILL to the process group")
 				if err := SignalGroup(pid, syscall.SIGKILL); err != nil {
 					p.logger.Warn("Failed to send SIGKILL", "error", err)
@@ -405,7 +417,7 @@ func (p *Process) Restart() error {
 }
 
 // monitor waits for the process to exit and applies the restart policy
-func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done chan struct{}) {
+func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done, stopRequested chan struct{}) {
 	defer close(done)
 
 	err := cmd.Wait()
@@ -445,12 +457,12 @@ func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done chan struct{}
 	default:
 		p.logger.Info("Process exited", "exit_code", exitCode)
 		p.setState(StateExited)
-		p.maybeRestart(ctx, exitCode)
+		p.maybeRestart(ctx, stopRequested, exitCode)
 	}
 }
 
 // maybeRestart applies the autorestart policy after an unsupervised exit
-func (p *Process) maybeRestart(ctx context.Context, exitCode int) {
+func (p *Process) maybeRestart(ctx context.Context, stopRequested chan struct{}, exitCode int) {
 	shouldRestart := false
 	switch p.config.Autorestart {
 	case config.RestartAlways:
@@ -484,6 +496,9 @@ func (p *Process) maybeRestart(ctx context.Context, exitCode int) {
 	select {
 	case <-time.After(backoff):
 	case <-ctx.Done():
+		p.logger.Info("Restart canceled")
+		return
+	case <-stopRequested:
 		p.logger.Info("Restart canceled")
 		return
 	}

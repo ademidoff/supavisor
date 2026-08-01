@@ -184,6 +184,10 @@ Each program is defined under `programs` with its name as the key:
 - `autostart`: Start process automatically on supavisor startup (default: true)
 - `autorestart`: Restart policy - `always`, `never`, or `unexpected` (default: unexpected)
 - `startsecs`: Seconds to wait before considering start successful (default: 1)
+- `stopsignal`: Signal sent to stop the process - `TERM` (default), `INT`, `QUIT`,
+  `HUP`, `USR1`, `USR2` or `KILL`. The `SIG` prefix is optional.
+- `stopwaitsecs`: Seconds to wait for the process to exit on `stopsignal` before it
+  is killed (default: 10)
 - `max_restarts`: Maximum number of *consecutive* restarts before giving up (default: 3).
   See [Restart behavior](#restart-behavior) for how the counter is reset.
 - `depends_on`: List of program names that must be running first
@@ -259,8 +263,11 @@ programs:
 ```
 
 After a process exits, anything still left in its group is killed, so a program
-that backgrounds work and returns does not leak it. If the group does not exit on
-`SIGINT` within the shutdown timeout, the whole group is sent `SIGKILL`.
+that backgrounds work and returns does not leak it. If the group has not exited
+`stopwaitsecs` after the stop signal, the whole group is sent `SIGKILL`.
+
+The stop signal defaults to `SIGTERM`, which is what a daemon expects to be asked
+to shut down with. Set `stopsignal: INT` for a program that only handles `SIGINT`.
 
 One consequence: because managed processes are in their own groups, `Ctrl+C` in a
 terminal running supavisor in the foreground reaches supavisor only. Supavisor

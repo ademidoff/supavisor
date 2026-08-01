@@ -424,3 +424,82 @@ func TestStopCancelsPendingRestart(t *testing.T) {
 		t.Errorf("Expected process to stay STOPPED, got: %v", state)
 	}
 }
+
+// TestStopUsesTheConfiguredSignal checks that a program which only handles
+// SIGTERM exits on the signal rather than sitting out the timeout and being
+// killed, which is what happened when SIGINT was hard-coded.
+func TestStopUsesTheConfiguredSignal(t *testing.T) {
+	tmpDir := t.TempDir()
+	marker := filepath.Join(tmpDir, "caught-term")
+
+	cfg := &config.ProgramConfig{
+		Name: "termonly",
+		// Ignores INT entirely; exits cleanly on TERM
+		Command:       fmt.Sprintf("/bin/sh -c 'trap \"\" INT; trap \"touch %s; exit 0\" TERM; while true; do sleep 0.1; done'", marker),
+		Autorestart:   config.RestartNever,
+		StartSecs:     1,
+		StopSignal:    syscall.SIGTERM,
+		StopWaitSecs:  10,
+		MaxRestarts:   3,
+		StdoutLogfile: filepath.Join(tmpDir, "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+	time.Sleep(1500 * time.Millisecond)
+
+	started := time.Now()
+	if err := proc.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("Process was not stopped with SIGTERM: %v", err)
+	}
+	// Sitting out stopwaitsecs would mean the signal was not handled.
+	if elapsed > 3*time.Second {
+		t.Errorf("Stop took %v, so the process was killed rather than signaled", elapsed)
+	}
+}
+
+// TestStopInterruptsARestartBackoff guards against a stop waiting out a restart
+// delay it is about to abandon.
+func TestStopInterruptsARestartBackoff(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.ProgramConfig{
+		Name:          "flappy",
+		Command:       "/bin/sh -c 'exit 1'",
+		Autorestart:   config.RestartAlways,
+		StartSecs:     1,
+		StopSignal:    syscall.SIGTERM,
+		StopWaitSecs:  10,
+		MaxRestarts:   8,
+		StdoutLogfile: filepath.Join(tmpDir, "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	// Let it fail a few times so the backoff has grown to several seconds
+	time.Sleep(4 * time.Second)
+
+	started := time.Now()
+	if err := proc.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Errorf("Stop took %v waiting out the restart backoff", elapsed)
+	}
+	if state := proc.GetState(); state != StateStopped {
+		t.Errorf("Expected STOPPED, got %s", state)
+	}
+}

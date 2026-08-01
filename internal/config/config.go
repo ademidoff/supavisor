@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,7 +22,15 @@ const (
 	RestartUnexpected RestartPolicy = "unexpected"
 )
 
-const defaultLogFileMaxBytes = 50 * 1024 * 1024
+const (
+	defaultLogFileMaxBytes = 50 * 1024 * 1024
+
+	// defaultStopWaitSecs is how long a process gets to exit on its stop signal
+	// before it is killed.
+	defaultStopWaitSecs = 10
+
+	defaultLogFileBackups = 10
+)
 
 // SupavisorConfig represents the main supavisor configuration
 type SupavisorConfig struct {
@@ -46,6 +55,8 @@ type ProgramConfig struct {
 	Autostart             bool
 	Priority              int
 	StartSecs             int
+	StopSignal            syscall.Signal
+	StopWaitSecs          int
 	MaxRestarts           int
 	StdoutLogfileMaxBytes int64
 	StdoutLogfileBackups  int
@@ -81,6 +92,7 @@ type programFile struct {
 	Command               string            `yaml:"command"`
 	Directory             string            `yaml:"directory"`
 	Autorestart           string            `yaml:"autorestart"`
+	StopSignal            string            `yaml:"stopsignal"`
 	StdoutLogfile         string            `yaml:"stdout_logfile"`
 	StderrLogfile         string            `yaml:"stderr_logfile"`
 	StdoutLogfileMaxBytes string            `yaml:"stdout_logfile_maxbytes"`
@@ -89,6 +101,7 @@ type programFile struct {
 	DependsOn             []string          `yaml:"depends_on"`
 	Priority              int               `yaml:"priority"`
 	StartSecs             int               `yaml:"startsecs"`
+	StopWaitSecs          int               `yaml:"stopwaitsecs"`
 	MaxRestarts           int               `yaml:"max_restarts"`
 	StdoutLogfileBackups  int               `yaml:"stdout_logfile_backups"`
 	StdoutLogfileMaxAge   int               `yaml:"stdout_logfile_maxage"`
@@ -266,9 +279,18 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		return nil, fmt.Errorf("invalid autorestart policy: %s (must be always, never, or unexpected)", restartPolicy)
 	}
 
+	stopSignal, err := parseSignal(raw.StopSignal)
+	if err != nil {
+		return nil, err
+	}
+
 	startSecs := raw.StartSecs
 	if startSecs == 0 {
 		startSecs = 1
+	}
+	stopWaitSecs := raw.StopWaitSecs
+	if stopWaitSecs == 0 {
+		stopWaitSecs = defaultStopWaitSecs
 	}
 	maxRestarts := raw.MaxRestarts
 	if maxRestarts == 0 {
@@ -284,22 +306,7 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		maps.Copy(env, raw.Environment)
 	}
 
-	stdoutMaxBytes := parseBytes(raw.StdoutLogfileMaxBytes)
-	if stdoutMaxBytes == 0 {
-		stdoutMaxBytes = defaultLogFileMaxBytes
-	}
-	stderrMaxBytes := parseBytes(raw.StderrLogfileMaxBytes)
-	if stderrMaxBytes == 0 {
-		stderrMaxBytes = defaultLogFileMaxBytes
-	}
-	stdoutBackups := raw.StdoutLogfileBackups
-	if stdoutBackups == 0 {
-		stdoutBackups = 10
-	}
-	stderrBackups := raw.StderrLogfileBackups
-	if stderrBackups == 0 {
-		stderrBackups = 10
-	}
+	logging := convertLogging(raw)
 
 	return &ProgramConfig{
 		Name:                  name,
@@ -311,17 +318,82 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		DependsOn:             raw.DependsOn,
 		Priority:              priority,
 		StartSecs:             startSecs,
+		StopSignal:            stopSignal,
+		StopWaitSecs:          stopWaitSecs,
 		MaxRestarts:           maxRestarts,
 		StdoutLogfile:         raw.StdoutLogfile,
 		StderrLogfile:         raw.StderrLogfile,
-		StdoutLogfileMaxBytes: stdoutMaxBytes,
-		StdoutLogfileBackups:  stdoutBackups,
+		StdoutLogfileMaxBytes: logging.stdoutMaxBytes,
+		StdoutLogfileBackups:  logging.stdoutBackups,
 		StdoutLogfileMaxAge:   raw.StdoutLogfileMaxAge,
-		StderrLogfileMaxBytes: stderrMaxBytes,
-		StderrLogfileBackups:  stderrBackups,
+		StderrLogfileMaxBytes: logging.stderrMaxBytes,
+		StderrLogfileBackups:  logging.stderrBackups,
 		StderrLogfileMaxAge:   raw.StderrLogfileMaxAge,
 		User:                  raw.User,
 	}, nil
+}
+
+// loggingDefaults holds the resolved log rotation settings for a program
+type loggingDefaults struct {
+	stdoutMaxBytes int64
+	stderrMaxBytes int64
+	stdoutBackups  int
+	stderrBackups  int
+}
+
+func convertLogging(raw *programFile) loggingDefaults {
+	l := loggingDefaults{
+		stdoutMaxBytes: parseBytes(raw.StdoutLogfileMaxBytes),
+		stderrMaxBytes: parseBytes(raw.StderrLogfileMaxBytes),
+		stdoutBackups:  raw.StdoutLogfileBackups,
+		stderrBackups:  raw.StderrLogfileBackups,
+	}
+
+	if l.stdoutMaxBytes == 0 {
+		l.stdoutMaxBytes = defaultLogFileMaxBytes
+	}
+	if l.stderrMaxBytes == 0 {
+		l.stderrMaxBytes = defaultLogFileMaxBytes
+	}
+	if l.stdoutBackups == 0 {
+		l.stdoutBackups = defaultLogFileBackups
+	}
+	if l.stderrBackups == 0 {
+		l.stderrBackups = defaultLogFileBackups
+	}
+	return l
+}
+
+// stopSignals are the signals a program may be configured to stop on
+var stopSignals = map[string]syscall.Signal{
+	"TERM": syscall.SIGTERM,
+	"INT":  syscall.SIGINT,
+	"QUIT": syscall.SIGQUIT,
+	"HUP":  syscall.SIGHUP,
+	"USR1": syscall.SIGUSR1,
+	"USR2": syscall.SIGUSR2,
+	"KILL": syscall.SIGKILL,
+}
+
+// parseSignal resolves a configured stop signal name, with or without the SIG
+// prefix. An empty name means SIGTERM, which is what a daemon expects to be
+// asked to shut down with.
+func parseSignal(name string) (syscall.Signal, error) {
+	if strings.TrimSpace(name) == "" {
+		return syscall.SIGTERM, nil
+	}
+
+	key := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(name)), "SIG")
+	sig, ok := stopSignals[key]
+	if !ok {
+		names := make([]string, 0, len(stopSignals))
+		for known := range stopSignals {
+			names = append(names, known)
+		}
+		sort.Strings(names)
+		return 0, fmt.Errorf("invalid stopsignal: %s (must be one of %s)", name, strings.Join(names, ", "))
+	}
+	return sig, nil
 }
 
 // parseBytes parses a byte string like "10MB", "1GB", "500KB" into bytes
