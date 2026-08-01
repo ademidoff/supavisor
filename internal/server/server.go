@@ -20,6 +20,14 @@ const (
 	// reconciler to produce a settled outcome before reporting back.
 	actionTimeout = 30 * time.Second
 	pollInterval  = 100 * time.Millisecond
+
+	// signalBuffer leaves room for a second stop signal to be noticed while the
+	// first one is being acted on.
+	signalBuffer = 4
+
+	exitOK          = 0
+	exitFailed      = 1
+	exitInterrupted = 130
 )
 
 // ProcessStatusInfo contains status information about a process
@@ -321,19 +329,50 @@ func (s *Server) onProcessStateChange(name string, prevState, newState process.S
 	s.requestReconcile()
 }
 
-// setupSignalHandling sets up signal handling for graceful shutdown
+// setupSignalHandling installs the daemon's signal handlers
 func (s *Server) setupSignalHandling() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, signalBuffer)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
-	go func() {
-		sig := <-sigChan
-		s.logger.Info("Received signal to stop supavisor", "signal", sig.String())
-		if err := s.Stop(); err != nil {
-			s.logger.Error("failed to stop supavisor", "error", err)
+	go s.handleSignals(sigChan)
+}
+
+// handleSignals runs for the life of the daemon.
+//
+// It keeps reading rather than acting once and exiting, because installing a
+// handler replaces the default disposition: a second SIGTERM sent to a
+// shutdown that is taking too long would otherwise be swallowed, leaving
+// SIGKILL as the only way out.
+func (s *Server) handleSignals(sigChan chan os.Signal) {
+	shuttingDown := false
+
+	for sig := range sigChan {
+		switch sig {
+		case syscall.SIGHUP:
+			s.logger.Info("Received SIGHUP, reloading configuration")
+			if err := s.Reload(); err != nil {
+				s.logger.Error("failed to reload configuration", "error", err)
+			}
+
+		default:
+			if shuttingDown {
+				s.logger.Warn("Received a second stop signal, exiting immediately", "signal", sig.String())
+				os.Exit(exitInterrupted)
+			}
+
+			shuttingDown = true
+			s.logger.Info("Received signal to stop supavisor", "signal", sig.String())
+
+			go func() {
+				code := exitOK
+				if err := s.Stop(); err != nil {
+					s.logger.Error("failed to stop supavisor", "error", err)
+					code = exitFailed
+				}
+				os.Exit(code)
+			}()
 		}
-		os.Exit(0)
-	}()
+	}
 }
 
 // lockPIDFile takes the exclusive PID file lock for this daemon

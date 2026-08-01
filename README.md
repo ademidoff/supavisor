@@ -247,6 +247,16 @@ started; those are reported as `STOPPED`.
 exited or reached `FATAL` on its own. Stopping a process that is waiting out a
 restart backoff cancels that pending restart.
 
+## Signals
+
+Supavisor handles:
+
+- `SIGTERM` / `SIGINT`: stop all processes and exit. A second one, sent while
+  that shutdown is still in progress, exits immediately rather than being
+  ignored, so a program that refuses to stop cannot leave the daemon unkillable
+  by anything short of `SIGKILL`.
+- `SIGHUP`: reload the configuration, equivalent to `sctl reload`.
+
 ## Reloading configuration
 
 `sctl reload` re-reads the config file and its drop-in fragments and applies the
