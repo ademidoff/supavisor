@@ -126,7 +126,8 @@ func (s *Server) applyPrograms(newCfg *config.Config, previous map[string]Desire
 
 // diffPrograms reports which programs a new configuration adds, drops and
 // redefines
-func diffPrograms(old, updated map[string]*config.ProgramConfig) (added, removed, changed []string) {
+func diffPrograms(old, updated map[string]*config.ProgramConfig) ([]string, []string, []string) {
+	var added, removed, changed []string
 	for name, newProg := range updated {
 		oldProg, exists := old[name]
 		switch {

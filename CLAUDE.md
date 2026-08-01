@@ -28,6 +28,7 @@ supavisor manages processes using the following pattern:
 - Use `any` instead of `interface{}`
 - Prefer tagless `switch` statements over `if` statements
 - Always use `make` to create arrays and maps
+- Always run `make format` then `make lint` before committing
 
 ### Don't
 - Don't edit generated files manually
@@ -35,6 +36,7 @@ supavisor manages processes using the following pattern:
 - Don't commit test binaries or test artifacts (add to `.gitignore` if needed)
 - Don't comment on every single line of code unnecessarily, only where clarity is needed
 - Don't inline comments (i.e. `code // comment`), always put comments on separate lines
+- Don't use named return values
 - Never use `%q` in string formatting, use `%s` instead
 
 ### Error Handling
