@@ -210,7 +210,8 @@ Each program is defined under `programs` with its name as the key:
 - `autorestart`: Restart policy - `always`, `never`, or `unexpected` (default: unexpected)
 - `startsecs`: Seconds to wait before considering start successful (default: 1)
 - `stopsignal`: Signal sent to stop the process - `TERM` (default), `INT`, `QUIT`,
-  `HUP`, `USR1`, `USR2` or `KILL`. The `SIG` prefix is optional.
+  `HUP`, `USR1`, `USR2` or `KILL`. The `SIG` prefix is optional. See
+  [When a program needs `stopsignal: INT`](#when-a-program-needs-stopsignal-int).
 - `stopwaitsecs`: Seconds to wait for the process to exit on `stopsignal` before it
   is killed (default: 10)
 - `max_restarts`: Maximum number of *consecutive* restarts before giving up (default: 3).
@@ -323,15 +324,94 @@ programs:
 ```
 
 After a process exits, anything still left in its group is killed, so a program
-that backgrounds work and returns does not leak it. If the group has not exited
-`stopwaitsecs` after the stop signal, the whole group is sent `SIGKILL`.
-
-The stop signal defaults to `SIGTERM`, which is what a daemon expects to be asked
-to shut down with. Set `stopsignal: INT` for a program that only handles `SIGINT`.
+that backgrounds work and returns does not leak it.
 
 One consequence: because managed processes are in their own groups, `Ctrl+C` in a
 terminal running supavisor in the foreground reaches supavisor only. Supavisor
 then stops its processes itself, in its own order.
+
+## Stopping processes
+
+`sctl stop`, `sctl restart` and daemon shutdown all follow the same sequence:
+
+1. `stopsignal` (default `TERM`) is sent to the process group.
+2. Supavisor waits up to `stopwaitsecs` (default 10) for the group to exit.
+3. Anything still alive is sent `SIGKILL`.
+
+### When a program needs `stopsignal: INT`
+
+`SIGTERM` is the right default, because it is the signal a daemon is
+conventionally asked to shut down with. But a program only shuts down cleanly on
+a signal it actually handles, and some programs only handle `SIGINT`. Sending
+those `SIGTERM` skips their cleanup entirely and they are killed `stopwaitsecs`
+later.
+
+Set `stopsignal: INT` when the program is one of these:
+
+- **Written to be stopped with Ctrl+C.** A program developed by running it in a
+  terminal usually grows a `SIGINT` handler and nothing for `SIGTERM`, because
+  Ctrl+C was the only way it was ever stopped.
+- **A Python program relying on `KeyboardInterrupt`.** `SIGINT` raises
+  `KeyboardInterrupt`, so `try`/`finally`, `with` blocks and `atexit` handlers all
+  run. `SIGTERM` has no default handler in Python at all: the process is
+  terminated with nothing run. A program that catches `KeyboardInterrupt`, or
+  relies on `atexit`, but never calls `signal.signal(signal.SIGTERM, ...)` needs
+  `stopsignal: INT`.
+- **A Node.js program registering only `process.on('SIGINT', ...)`.** Same shape:
+  the default disposition for `SIGTERM` terminates the process without running
+  the handler.
+- **A program that treats the two asymmetrically**, using `SIGINT` to drain
+  gracefully and `SIGTERM` to stop at once. Some queue workers and batch jobs do
+  this deliberately so an operator can pick.
+- **Anything that stopped cleanly under an older supavisor.** Stopping used to be
+  hard-coded to `SIGINT`; `stopsignal: INT` restores the previous behavior for a
+  program that regressed.
+
+The same reasoning applies to the other values. `QUIT` is worth knowing about
+because some servers, nginx among them, document `SIGQUIT` as their graceful
+shutdown and `SIGTERM` as a fast one.
+
+### Checking whether a program handles its stop signal
+
+A program that ignores its stop signal always takes the full `stopwaitsecs` and
+is then killed. In supavisor's log that looks like:
+
+```
+msg="Signaling the process group for graceful shutdown" process=importer signal=terminated
+msg="Graceful shutdown timeout, sending SIGKILL to the process group" process=importer
+msg="Force killed" process=importer
+```
+
+A program that handles the signal logs this instead, and promptly:
+
+```
+msg="Signaling the process group for graceful shutdown" process=importer signal=terminated
+msg="Process exited gracefully" process=importer
+```
+
+Timing shows it too: `time sctl stop <name>` taking about `stopwaitsecs` rather
+than returning straight away means the signal was ignored. You can also check the
+program directly, outside supavisor:
+
+```bash
+# Run it by hand, then from another terminal:
+kill -TERM <pid>   # does it clean up and exit?
+kill -INT  <pid>   # does this work where TERM did not?
+```
+
+Putting it together:
+
+```yaml
+programs:
+  importer:
+    command: /usr/bin/python3 /opt/importer/run.py
+    stopsignal: INT    # cleanup hangs off KeyboardInterrupt
+    stopwaitsecs: 30   # let the in-flight batch finish
+```
+
+If a program handles neither signal there is nothing to configure: it will always
+be killed. Lower its `stopwaitsecs` so shutdown is not held up waiting for a
+graceful exit that is never going to happen.
 
 ## Restart behavior
 
@@ -368,7 +448,7 @@ programs:
     depends_on: [db]   # starts on its own once db is RUNNING
 ```
 
-Other behaviour:
+Other behavior:
 
 - When a dependency stops or crashes, it is restarted according to its own
   `autorestart` policy. Dependent processes keep running: supavisor does not
