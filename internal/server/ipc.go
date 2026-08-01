@@ -3,31 +3,64 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
+	"os/user"
+	"strconv"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ademidoff/supavisor/internal/api"
 )
 
-const msgProcessNameRequired = "process name required"
+const (
+	msgProcessNameRequired = "process name required"
+
+	// socketMode keeps the control socket off-limits to arbitrary local users.
+	// Anyone who can write to it can stop supervised processes and, through
+	// start, cause configured commands to run as the daemon's user.
+	socketMode = 0o660
+
+	// maxConnections bounds how many clients can occupy the daemon at once, so
+	// a local process cannot exhaust its goroutines or descriptors.
+	maxConnections = 32
+
+	// maxRequestBytes bounds a single request. Without it a client could stream
+	// an unbounded body into the decoder and exhaust memory.
+	maxRequestBytes = 64 * 1024
+
+	// connectionTimeout drops a client that connects and then does nothing,
+	// rather than holding the slot open indefinitely.
+	connectionTimeout = 2 * time.Minute
+
+	// acceptRetryDelay backs off after an accept error that is not fatal, such
+	// as running out of descriptors. Retrying flat out would spin on the CPU.
+	acceptRetryDelay = 50 * time.Millisecond
+)
 
 // IPCServer handles communication with the CLI tool
 type IPCServer struct {
-	listener   net.Listener
-	server     *Server
-	stopChan   chan struct{}
-	socketInfo os.FileInfo
-	socketPath string
+	listener    net.Listener
+	server      *Server
+	stopChan    chan struct{}
+	slots       chan struct{}
+	socketInfo  os.FileInfo
+	socketPath  string
+	socketGroup string
+	connections sync.WaitGroup
 }
 
 // NewIPCServer creates a new IPC server
-func NewIPCServer(socketPath string, server *Server) *IPCServer {
+func NewIPCServer(socketPath, socketGroup string, server *Server) *IPCServer {
 	return &IPCServer{
-		socketPath: socketPath,
-		server:     server,
-		stopChan:   make(chan struct{}),
+		socketPath:  socketPath,
+		socketGroup: socketGroup,
+		server:      server,
+		stopChan:    make(chan struct{}),
+		slots:       make(chan struct{}, maxConnections),
 	}
 }
 
@@ -58,14 +91,48 @@ func (s *IPCServer) Start() error {
 	}
 	s.socketInfo = info
 
-	// Set socket permissions
-	if err := os.Chmod(s.socketPath, 0o666); err != nil {
-		return fmt.Errorf("failed to set socket permissions: %w", err)
+	if err := s.restrictSocket(); err != nil {
+		return err
 	}
 
 	go s.acceptConnections()
 
 	return nil
+}
+
+// restrictSocket narrows who can talk to the daemon
+func (s *IPCServer) restrictSocket() error {
+	if s.socketGroup != "" {
+		gid, err := lookupGroupID(s.socketGroup)
+		if err != nil {
+			return err
+		}
+		if err := os.Chown(s.socketPath, -1, gid); err != nil {
+			return fmt.Errorf("failed to give socket to group %s: %w", s.socketGroup, err)
+		}
+	}
+
+	if err := os.Chmod(s.socketPath, socketMode); err != nil {
+		return fmt.Errorf("failed to set socket permissions: %w", err)
+	}
+	return nil
+}
+
+// lookupGroupID resolves a group name or numeric id
+func lookupGroupID(group string) (int, error) {
+	if gid, err := strconv.Atoi(group); err == nil {
+		return gid, nil
+	}
+
+	grp, err := user.LookupGroup(group)
+	if err != nil {
+		return 0, fmt.Errorf("failed to look up socket_group %s: %w", group, err)
+	}
+	gid, err := strconv.Atoi(grp.Gid)
+	if err != nil {
+		return 0, fmt.Errorf("group %s has an unusable gid %s: %w", group, grp.Gid, err)
+	}
+	return gid, nil
 }
 
 // Stop stops the IPC server
@@ -76,6 +143,7 @@ func (s *IPCServer) Stop() error {
 	}
 
 	err := s.listener.Close()
+	s.connections.Wait()
 	if s.socketInfo != nil {
 		if rmErr := removeIfSame(s.socketPath, s.socketInfo); rmErr != nil {
 			slog.Warn("failed to remove socket", "path", s.socketPath, "error", rmErr)
@@ -87,21 +155,37 @@ func (s *IPCServer) Stop() error {
 // acceptConnections accepts incoming connections
 func (s *IPCServer) acceptConnections() {
 	for {
-		select {
-		case <-s.stopChan:
-			return
-		default:
-			conn, err := s.listener.Accept()
-			if err != nil {
-				select {
-				case <-s.stopChan:
-					return
-				default:
-					continue
-				}
+		conn, err := s.listener.Accept()
+		if err != nil {
+			select {
+			case <-s.stopChan:
+				return
+			default:
 			}
-			go s.handleConnection(conn)
+			// Retrying immediately on a persistent error, such as running out
+			// of descriptors, would spin on the CPU for as long as it lasts.
+			slog.Warn("failed to accept connection", "error", err)
+			time.Sleep(acceptRetryDelay)
+			continue
 		}
+
+		// Hold the client rather than dropping it, so that a burst queues
+		// instead of failing, but never run more than maxConnections at once.
+		select {
+		case s.slots <- struct{}{}:
+		case <-s.stopChan:
+			_ = conn.Close()
+			return
+		}
+
+		s.connections.Add(1)
+		go func() {
+			defer func() {
+				<-s.slots
+				s.connections.Done()
+			}()
+			s.handleConnection(conn)
+		}()
 	}
 }
 
@@ -109,10 +193,19 @@ func (s *IPCServer) acceptConnections() {
 func (s *IPCServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	decoder := json.NewDecoder(conn)
+	// A client that connects and then goes quiet must not hold its slot for
+	// ever. The deadline is extended for each request it actually sends.
 	encoder := json.NewEncoder(conn)
 
 	for {
+		if err := conn.SetDeadline(time.Now().Add(connectionTimeout)); err != nil {
+			break
+		}
+
+		// A new decoder per request keeps the size limit per request rather
+		// than over the lifetime of the connection.
+		decoder := json.NewDecoder(io.LimitReader(conn, maxRequestBytes))
+
 		var req api.Request
 		if err := decoder.Decode(&req); err != nil {
 			break
@@ -128,26 +221,26 @@ func (s *IPCServer) handleConnection(conn net.Conn) {
 // handleRequest handles a request and returns a response
 func (s *IPCServer) handleRequest(req *api.Request) *api.Response {
 	switch req.Command {
-	case "status":
+	case api.CommandStatus:
 		return s.handleStatus()
-	case "start":
+	case api.CommandStart:
 		if len(req.Args) == 0 {
 			return &api.Response{Success: false, Message: msgProcessNameRequired}
 		}
 		return s.handleStart(req.Args[0])
-	case "stop":
+	case api.CommandStop:
 		if len(req.Args) == 0 {
 			return &api.Response{Success: false, Message: msgProcessNameRequired}
 		}
 		return s.handleStop(req.Args[0])
-	case "restart":
+	case api.CommandRestart:
 		if len(req.Args) == 0 {
 			return &api.Response{Success: false, Message: msgProcessNameRequired}
 		}
 		return s.handleRestart(req.Args[0])
-	case "reload":
+	case api.CommandReload:
 		return s.handleReload()
-	case "shutdown":
+	case api.CommandShutdown:
 		return s.handleShutdown()
 	default:
 		return &api.Response{Success: false, Message: fmt.Sprintf("unknown command: %s", req.Command)}

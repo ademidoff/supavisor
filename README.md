@@ -137,6 +137,10 @@ works, `sctl status -s /run/supavisor.sock` is rejected.
 Options:
 - `-s, -socket <path>`: Path to supavisor socket (default: `/tmp/supavisor.sock`)
 
+Access to the socket is access to the daemon: it can stop supervised processes,
+and `start` causes configured commands to run as the user supavisor runs as. The
+socket is therefore created `0660`, owned by `socket_group` when one is set.
+
 Commands:
 - `status`: Show status of all processes
 - `start <name>`: Start a specific process
@@ -172,6 +176,10 @@ If the drop-in directory does not exist, supavisor simply loads the main file.
   - Can be overridden with the `-logfile` command-line flag
 - `pidfile`: Path to PID file (default: `/var/run/supavisor.pid`)
 - `socket`: Path to Unix domain socket for CLI communication (default: `/tmp/supavisor.sock`)
+- `socket_group`: Group given ownership of the control socket, by name or numeric
+  gid (optional). The socket is created with mode `0660`, so by default only the
+  user running supavisor can use `sctl`. Set this to an administrators' group to
+  let its members manage processes without being that user.
 - `log_format`: Log format - `text` (default) or `json`
 - `log_level`: Log level - `debug`, `info` (default), `warn`, or `error`
 

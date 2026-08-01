@@ -34,11 +34,12 @@ const (
 
 // SupavisorConfig represents the main supavisor configuration
 type SupavisorConfig struct {
-	LogFile   string
-	PidFile   string
-	Socket    string
-	LogFormat string
-	LogLevel  string
+	LogFile     string
+	PidFile     string
+	Socket      string
+	SocketGroup string
+	LogFormat   string
+	LogLevel    string
 }
 
 // ProgramConfig represents configuration for a single program
@@ -79,11 +80,12 @@ type configFile struct {
 }
 
 type supavisorFile struct {
-	LogFile   string `yaml:"logfile"`
-	PidFile   string `yaml:"pidfile"`
-	Socket    string `yaml:"socket"`
-	LogFormat string `yaml:"log_format"`
-	LogLevel  string `yaml:"log_level"`
+	LogFile     string `yaml:"logfile"`
+	PidFile     string `yaml:"pidfile"`
+	Socket      string `yaml:"socket"`
+	SocketGroup string `yaml:"socket_group"`
+	LogFormat   string `yaml:"log_format"`
+	LogLevel    string `yaml:"log_level"`
 }
 
 type programFile struct {
@@ -119,11 +121,12 @@ func ParseConfigFile(path string) (*Config, error) {
 
 	config := &Config{
 		Supavisor: SupavisorConfig{
-			LogFile:   cfg.Supavisor.LogFile,
-			PidFile:   defaultString(cfg.Supavisor.PidFile, "/var/run/supavisor.pid"),
-			Socket:    defaultString(cfg.Supavisor.Socket, "/tmp/supavisor.sock"),
-			LogFormat: defaultString(cfg.Supavisor.LogFormat, "text"),
-			LogLevel:  defaultString(cfg.Supavisor.LogLevel, "info"),
+			LogFile:     cfg.Supavisor.LogFile,
+			PidFile:     defaultString(cfg.Supavisor.PidFile, "/var/run/supavisor.pid"),
+			Socket:      defaultString(cfg.Supavisor.Socket, "/tmp/supavisor.sock"),
+			SocketGroup: cfg.Supavisor.SocketGroup,
+			LogFormat:   defaultString(cfg.Supavisor.LogFormat, "text"),
+			LogLevel:    defaultString(cfg.Supavisor.LogLevel, "info"),
 		},
 		Programs: make(map[string]*ProgramConfig),
 	}

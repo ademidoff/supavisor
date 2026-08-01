@@ -65,14 +65,11 @@ func main() {
 	}
 
 	// Print response based on command
-	switch command {
-	case "status":
+	if command == api.CommandStatus {
 		printStatus(*resp)
-	case "start", "stop", "restart", "reload", "shutdown":
-		fmt.Println(resp.Message)
-	default:
-		fmt.Println(resp.Message)
+		return
 	}
+	fmt.Println(resp.Message)
 }
 
 func printStatus(resp api.Response) {

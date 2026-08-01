@@ -125,7 +125,7 @@ func (s *Server) Start() error {
 	s.running = true
 
 	// Start IPC server
-	s.ipcServer = NewIPCServer(s.config.Supavisor.Socket, s)
+	s.ipcServer = NewIPCServer(s.config.Supavisor.Socket, s.config.Supavisor.SocketGroup, s)
 	if err := s.ipcServer.Start(); err != nil {
 		s.releasePIDFile()
 		s.running = false
