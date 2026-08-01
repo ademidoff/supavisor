@@ -77,11 +77,17 @@ nohup ./supavisor -c supavisor.yml &
 - When a logfile is configured, all logs are written to the log file only (no console output)
 - When no logfile is configured, logs are written to stdout (useful for container environments)
 - To run without a logfile, comment out or omit the `logfile` setting in the config
-- Supavisor prevents multiple instances from running simultaneously by checking PID and socket files
-- If you find stale PID or socket files after a crash, remove them manually before starting:
-  ```bash
-  rm /tmp/supavisor.pid /tmp/supavisor.sock
-  ```
+- Supavisor holds an exclusive lock on its PID file for as long as it runs, which
+  is what prevents a second instance from starting. Starting one reports the PID
+  of the daemon that already holds the lock.
+- The kernel releases the lock when the daemon exits, including on a crash, so a
+  PID or socket file left behind by a crash is not an obstacle: supavisor takes
+  the lock, reuses the paths and starts normally. There is nothing to remove by
+  hand, and supavisor can run under `systemd`'s `Restart=` or a container restart
+  policy without needing intervention to come back up.
+- On shutdown supavisor removes its PID file and socket only if those paths still
+  refer to the files it created, so a slow shutdown can never delete the files of
+  a daemon that has already replaced it.
 
 3. Use the CLI tool to manage processes:
 

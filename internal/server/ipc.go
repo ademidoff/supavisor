@@ -18,6 +18,7 @@ type IPCServer struct {
 	listener   net.Listener
 	server     *Server
 	stopChan   chan struct{}
+	socketInfo os.FileInfo
 	socketPath string
 }
 
@@ -32,11 +33,10 @@ func NewIPCServer(socketPath string, server *Server) *IPCServer {
 
 // Start starts the IPC server
 func (s *IPCServer) Start() error {
-	// Remove existing socket if it exists
-	if _, err := os.Stat(s.socketPath); err == nil {
-		if err := os.Remove(s.socketPath); err != nil {
-			return fmt.Errorf("failed to remove existing socket: %w", err)
-		}
+	// Safe to clear a leftover socket: the caller holds the PID file lock, so
+	// no other daemon can be listening on this path.
+	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove existing socket: %w", err)
 	}
 
 	listener, err := net.Listen("unix", s.socketPath) //nolint:noctx
@@ -44,7 +44,19 @@ func (s *IPCServer) Start() error {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
 
+	// Unlink on our own terms. Go removes the socket path on Close even when a
+	// newer daemon has already replaced it, which would leave that daemon
+	// listening on a socket nothing can reach.
+	if unixListener, ok := listener.(*net.UnixListener); ok {
+		unixListener.SetUnlinkOnClose(false)
+	}
 	s.listener = listener
+
+	info, err := os.Stat(s.socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat socket: %w", err)
+	}
+	s.socketInfo = info
 
 	// Set socket permissions
 	if err := os.Chmod(s.socketPath, 0o666); err != nil {
@@ -59,10 +71,17 @@ func (s *IPCServer) Start() error {
 // Stop stops the IPC server
 func (s *IPCServer) Stop() error {
 	close(s.stopChan)
-	if s.listener != nil {
-		return s.listener.Close()
+	if s.listener == nil {
+		return nil
 	}
-	return nil
+
+	err := s.listener.Close()
+	if s.socketInfo != nil {
+		if rmErr := removeIfSame(s.socketPath, s.socketInfo); rmErr != nil {
+			slog.Warn("failed to remove socket", "path", s.socketPath, "error", rmErr)
+		}
+	}
+	return err
 }
 
 // acceptConnections accepts incoming connections

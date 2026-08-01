@@ -39,6 +39,7 @@ type Server struct {
 	processes       map[string]*process.Process
 	dependencyGraph *dependency.Graph
 	ipcServer       *IPCServer
+	pidLock         *pidLock
 	stopChan        chan struct{}
 	processMutex    sync.RWMutex
 	running         bool
@@ -81,8 +82,9 @@ func (s *Server) Start() error {
 		return fmt.Errorf("supavisor is already running")
 	}
 
-	// Check if another instance is already running
-	if err := s.checkIfRunning(); err != nil {
+	// Holding this for the lifetime of the daemon is what keeps a second
+	// instance from starting, and it is dropped by the kernel on a crash.
+	if err := s.lockPIDFile(); err != nil {
 		return err
 	}
 
@@ -91,12 +93,9 @@ func (s *Server) Start() error {
 	// Start IPC server
 	s.ipcServer = NewIPCServer(s.config.Supavisor.Socket, s)
 	if err := s.ipcServer.Start(); err != nil {
+		s.releasePIDFile()
+		s.running = false
 		return fmt.Errorf("failed to start IPC server: %w", err)
-	}
-
-	// Write PID file
-	if err := s.writePIDFile(); err != nil {
-		return fmt.Errorf("failed to write PID file: %w", err)
 	}
 
 	// Setup signal handling
@@ -144,8 +143,7 @@ func (s *Server) Stop() error {
 		}
 	}
 
-	// Remove PID file
-	s.removePIDFile()
+	s.releasePIDFile()
 
 	s.logger.Info("Supavisor daemon stopped")
 	return nil
@@ -446,65 +444,30 @@ func (s *Server) setupSignalHandling() {
 	}()
 }
 
-// checkIfRunning checks if another instance is already running
-func (s *Server) checkIfRunning() error {
-	// Check if PID file exists and process is running
-	if s.config.Supavisor.PidFile != "" {
-		if data, err := os.ReadFile(s.config.Supavisor.PidFile); err == nil {
-			var pid int
-			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil {
-				// Check if process is still running
-				if proc, err := os.FindProcess(pid); err == nil {
-					// Send signal 0 to check if process exists
-					if err := proc.Signal(syscall.Signal(0)); err == nil {
-						return fmt.Errorf("supavisor is already running (PID: %d)", pid)
-					}
-				}
-			}
-			// PID file exists but process is not running - this is a stale file
-			return fmt.Errorf("found stale PID file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs", //nolint:lll
-				s.config.Supavisor.PidFile)
-		}
-	}
-
-	// Check if socket is in use
-	if s.config.Supavisor.Socket != "" {
-		if _, err := os.Stat(s.config.Supavisor.Socket); err == nil {
-			// Try to connect to see if it's actually in use
-			conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
-			if err == nil {
-				defer syscall.Close(conn)
-				addr := &syscall.SockaddrUnix{Name: s.config.Supavisor.Socket}
-				if err := syscall.Connect(conn, addr); err == nil {
-					return fmt.Errorf("supavisor socket is already in use: %s", s.config.Supavisor.Socket)
-				}
-			}
-			// Socket file exists but not in use - this is a stale file
-			return fmt.Errorf("found stale socket file: %s\nThe previous instance may not have exited cleanly. Please remove it manually and check the logs", //nolint:lll
-				s.config.Supavisor.Socket)
-		}
-	}
-
-	return nil
-}
-
-// writePIDFile writes the PID file
-func (s *Server) writePIDFile() error {
+// lockPIDFile takes the exclusive PID file lock for this daemon
+func (s *Server) lockPIDFile() error {
 	if s.config.Supavisor.PidFile == "" {
+		s.logger.Warn("No pidfile configured: nothing prevents a second instance from starting")
 		return nil
 	}
 
-	pid := os.Getpid()
-	return os.WriteFile(s.config.Supavisor.PidFile, fmt.Appendf(nil, "%d\n", pid), 0o600)
+	lock, err := acquirePIDLock(s.config.Supavisor.PidFile)
+	if err != nil {
+		return err
+	}
+	s.pidLock = lock
+	return nil
 }
 
-// removePIDFile removes the PID file
-func (s *Server) removePIDFile() {
-	if s.config.Supavisor.PidFile != "" {
-		if err := os.Remove(s.config.Supavisor.PidFile); err != nil {
-			s.logger.Warn("failed to remove PID file", "error", err)
-		}
+// releasePIDFile drops the PID file lock and removes the file
+func (s *Server) releasePIDFile() {
+	if s.pidLock == nil {
+		return
 	}
+	if err := s.pidLock.Release(); err != nil {
+		s.logger.Warn("failed to release PID file", "error", err)
+	}
+	s.pidLock = nil
 }
 
 // formatDuration formats a duration as a human-readable string
