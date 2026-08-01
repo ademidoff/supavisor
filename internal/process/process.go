@@ -245,6 +245,18 @@ func (p *Process) buildCommand(ctx context.Context, stdout, stderr *os.File) (*e
 	p.logger.Debug("Creating command", "command_parts", parts)
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) //nolint:gosec
 
+	// Give the child its own process group, which everything it spawns
+	// inherits. Signaling the group is the only way to reach the workload
+	// behind a wrapper script: killing just the direct child leaves its
+	// children running and reparented to init.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// The default cancellation kills the direct child only, which would leak
+	// the rest of the group.
+	cmd.Cancel = func() error {
+		return signalGroup(cmd.Process.Pid, syscall.SIGKILL)
+	}
+
 	if p.config.Directory != "" {
 		p.logger.Info("Setting working directory", "directory", p.config.Directory)
 		cmd.Dir = p.config.Directory
@@ -322,10 +334,11 @@ func (p *Process) Stop() error {
 	p.setState(StateStopping)
 
 	if cmd != nil && cmd.Process != nil {
-		// Check if process is still alive before signaling (it may have exited with parent's SIGTERM)
-		if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
-			p.logger.Info("Sending SIGINT for graceful shutdown")
-			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		// Check the group is still alive before signaling: the process may have
+		// exited already, for instance on the parent's own SIGTERM.
+		if err := signalGroup(pid, syscall.Signal(0)); err == nil {
+			p.logger.Info("Sending SIGINT to the process group for graceful shutdown")
+			if err := signalGroup(pid, syscall.SIGINT); err != nil {
 				p.logger.Warn("Failed to send SIGINT", "error", err)
 			}
 		}
@@ -335,8 +348,8 @@ func (p *Process) Stop() error {
 			case <-monitorDone:
 				p.logger.Info("Process exited gracefully")
 			case <-time.After(gracefulShutdownTimeout):
-				p.logger.Info("Graceful shutdown timeout, sending SIGKILL")
-				if err := cmd.Process.Kill(); err != nil {
+				p.logger.Info("Graceful shutdown timeout, sending SIGKILL to the process group")
+				if err := signalGroup(pid, syscall.SIGKILL); err != nil {
 					p.logger.Warn("Failed to send SIGKILL", "error", err)
 				}
 				<-monitorDone
@@ -356,6 +369,29 @@ func (p *Process) Stop() error {
 	return nil
 }
 
+// signalGroup sends sig to the process group led by pid. Children inherit their
+// parent's group, so this reaches the whole tree rather than just the process
+// supavisor started.
+func signalGroup(pid int, sig syscall.Signal) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
+	return syscall.Kill(-pid, sig)
+}
+
+// killLingeringGroup kills anything left in the process group after the process
+// itself has exited
+func (p *Process) killLingeringGroup(pid int) {
+	if err := signalGroup(pid, syscall.Signal(0)); err != nil {
+		return
+	}
+
+	p.logger.Info("Process group still has members after exit, killing them", "pgid", pid)
+	if err := signalGroup(pid, syscall.SIGKILL); err != nil {
+		p.logger.Warn("Failed to kill lingering process group", "pgid", pid, "error", err)
+	}
+}
+
 // Restart restarts the process
 func (p *Process) Restart() error {
 	p.logger.Info("Restarting process")
@@ -373,6 +409,12 @@ func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done chan struct{}
 	defer close(done)
 
 	err := cmd.Wait()
+
+	// The process is reaped, but anything it spawned is still in its group and
+	// would survive as an orphan. Clear the group first: those grandchildren
+	// also hold the log pipe open, so removing them lets the drain finish
+	// instead of timing out.
+	p.killLingeringGroup(cmd.Process.Pid)
 
 	// Flush whatever the process left in the pipes before recording the exit.
 	p.stopLogging()

@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -197,6 +199,99 @@ func TestRotationKeepsCapturingOutput(t *testing.T) {
 	// Backups beyond the configured count must be pruned.
 	if _, err := os.Stat(logPath + ".4"); err == nil {
 		t.Error("Backup .4 exists but only 3 backups are configured")
+	}
+}
+
+// processAlive reports whether a PID can still be signaled
+func processAlive(pid int) bool {
+	return syscall.Kill(pid, syscall.Signal(0)) == nil
+}
+
+// TestStopKillsGrandchildren guards against orphaning the real workload. A
+// wrapper script that launches something in the background used to leave it
+// running and reparented to init, because only the direct child was signaled.
+func TestStopKillsGrandchildren(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "grandchild.pid")
+
+	cfg := &config.ProgramConfig{
+		Name: "wrapper",
+		// The wrapper backgrounds the real work and waits on it
+		Command:       fmt.Sprintf("/bin/sh -c 'sleep 300 & echo $! > %s; wait'", pidFile),
+		Autorestart:   config.RestartNever,
+		StartSecs:     1,
+		MaxRestarts:   3,
+		StdoutLogfile: filepath.Join(tmpDir, "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	// Wait for the wrapper to record its background child
+	var grandchild int
+	for range 40 {
+		time.Sleep(100 * time.Millisecond)
+		content, err := os.ReadFile(pidFile)
+		if err != nil {
+			continue
+		}
+		if pid, convErr := strconv.Atoi(strings.TrimSpace(string(content))); convErr == nil {
+			grandchild = pid
+			break
+		}
+	}
+	if grandchild == 0 {
+		t.Fatal("Wrapper never recorded a grandchild pid")
+	}
+	if !processAlive(grandchild) {
+		t.Fatalf("Grandchild %d should be running before the stop", grandchild)
+	}
+
+	if err := proc.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	if processAlive(grandchild) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Errorf("Grandchild %d survived the stop as an orphan", grandchild)
+	}
+}
+
+// TestProcessGetsItsOwnProcessGroup checks the property the group signaling
+// relies on: the child leads a group of its own rather than sharing supavisor's.
+func TestProcessGetsItsOwnProcessGroup(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.ProgramConfig{
+		Name:          "test",
+		Command:       "/bin/sleep 30",
+		Autorestart:   config.RestartNever,
+		StartSecs:     1,
+		MaxRestarts:   3,
+		StdoutLogfile: filepath.Join(tmpDir, "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	pid := proc.GetPID()
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		t.Fatalf("Getpgid failed: %v", err)
+	}
+	if pgid != pid {
+		t.Errorf("Process %d should lead its own group, got pgid %d", pid, pgid)
+	}
+	if pgid == syscall.Getpgrp() {
+		t.Error("Process shares supavisor's process group, so signals cannot be targeted at its tree")
 	}
 }
 

@@ -213,6 +213,28 @@ Each program is defined under `programs` with its name as the key:
 exited or reached `FATAL` on its own. Stopping a process that is waiting out a
 restart backoff cancels that pending restart.
 
+## Process groups
+
+Each managed process is started in a process group of its own, and everything it
+spawns inherits that group. Stopping a process signals the whole group rather than
+just the command supavisor launched, so a wrapper script does not leave the real
+workload running:
+
+```yaml
+programs:
+  worker:
+    # 'sh' is the direct child, but the python process is what matters
+    command: /bin/sh -c "exec_setup && python worker.py"
+```
+
+After a process exits, anything still left in its group is killed, so a program
+that backgrounds work and returns does not leak it. If the group does not exit on
+`SIGINT` within the shutdown timeout, the whole group is sent `SIGKILL`.
+
+One consequence: because managed processes are in their own groups, `Ctrl+C` in a
+terminal running supavisor in the foreground reaches supavisor only. Supavisor
+then stops its processes itself, in its own order.
+
 ## Restart behavior
 
 When a process exits on its own and its `autorestart` policy calls for a restart,
