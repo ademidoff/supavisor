@@ -503,3 +503,44 @@ func TestStopInterruptsARestartBackoff(t *testing.T) {
 		t.Errorf("Expected STOPPED, got %s", state)
 	}
 }
+
+func TestParseCommand(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{"plain", "/bin/echo hello world", []string{"/bin/echo", "hello", "world"}},
+		{"double quoted", `/bin/echo "hello world"`, []string{"/bin/echo", "hello world"}},
+		{"single quoted", `/bin/echo 'hello world'`, []string{"/bin/echo", "hello world"}},
+		{"quote inside quote", `/bin/echo "it's here"`, []string{"/bin/echo", "it's here"}},
+		{"adjacent quoting", `/bin/echo a"b c"d`, []string{"/bin/echo", "ab cd"}},
+		{"collapses runs of spaces", "/bin/echo  a   b", []string{"/bin/echo", "a", "b"}},
+		{"tabs separate too", "/bin/echo\ta\tb", []string{"/bin/echo", "a", "b"}},
+		{"empty", "", nil},
+
+		// An explicitly empty argument used to disappear entirely
+		{"empty argument", `/bin/echo "" x`, []string{"/bin/echo", "", "x"}},
+		{"empty single quoted", `/bin/echo '' x`, []string{"/bin/echo", "", "x"}},
+
+		// Escapes were not handled at all
+		{"escaped space", `/bin/echo a\ b`, []string{"/bin/echo", "a b"}},
+		{"escaped quote", `/bin/echo \"quoted\"`, []string{"/bin/echo", `"quoted"`}},
+		{"escaped backslash", `/bin/echo a\\b`, []string{"/bin/echo", `a\b`}},
+		{"backslash is literal in single quotes", `/bin/echo 'a\b'`, []string{"/bin/echo", `a\b`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCommand(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("parseCommand(%s) = %q, expected %q", tt.input, got, tt.expected)
+			}
+			for i := range tt.expected {
+				if got[i] != tt.expected[i] {
+					t.Errorf("parseCommand(%s) = %q, expected %q", tt.input, got, tt.expected)
+				}
+			}
+		})
+	}
+}

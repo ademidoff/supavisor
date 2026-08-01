@@ -862,3 +862,59 @@ programs:
 		t.Errorf("Error should say the setting is unimplemented, got: %v", err)
 	}
 }
+
+// TestValidate_RejectsSharedLogFiles guards the assumption rotation relies on:
+// supavisor owns each log file, so two programs cannot share one.
+func TestValidate_RejectsSharedLogFiles(t *testing.T) {
+	cfg := &Config{
+		Supavisor: SupavisorConfig{Socket: "/tmp/s.sock"},
+		Programs: map[string]*ProgramConfig{
+			"a": {Name: "a", Command: "/bin/true", StdoutLogfile: "/var/log/shared.log"},
+			"b": {Name: "b", Command: "/bin/true", StdoutLogfile: "/var/log/shared.log"},
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Expected two programs sharing a log file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "shared.log") {
+		t.Errorf("Error should name the file, got: %v", err)
+	}
+}
+
+// TestValidate_AllowsOneProgramSharingItsOwnStreams keeps the supported case
+// working: stdout and stderr of the same program may point at one file.
+func TestValidate_AllowsOneProgramSharingItsOwnStreams(t *testing.T) {
+	cfg := &Config{
+		Supavisor: SupavisorConfig{Socket: "/tmp/s.sock"},
+		Programs: map[string]*ProgramConfig{
+			"a": {
+				Name: "a", Command: "/bin/true",
+				StdoutLogfile: "/var/log/a.log",
+				StderrLogfile: "/var/log/a.log",
+			},
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("A program may point both streams at one file: %v", err)
+	}
+}
+
+// TestValidate_RejectsAnUnbindableSocketPath turns a bare "bind: invalid
+// argument" from the listener into something that says what is wrong.
+func TestValidate_RejectsAnUnbindableSocketPath(t *testing.T) {
+	cfg := &Config{
+		Supavisor: SupavisorConfig{Socket: "/tmp/" + strings.Repeat("d/", 60) + "s.sock"},
+		Programs:  map[string]*ProgramConfig{},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Expected an over-long socket path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unix socket") {
+		t.Errorf("Error should explain the limit, got: %v", err)
+	}
+}

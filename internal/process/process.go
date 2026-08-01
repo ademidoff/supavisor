@@ -701,41 +701,77 @@ func (p *Process) stopLogging() {
 	}
 }
 
-// parseCommand parses a command string into parts
+// parseCommand splits a command string into its arguments.
+//
+// This is not a shell: there is no expansion, globbing or substitution. It
+// handles quoting and backslash escapes so that arguments containing spaces,
+// quotes or an empty string can be expressed.
 func parseCommand(cmd string) []string {
 	parts := []string{}
-	current := ""
-	inQuotes := false
-	quoteChar := byte(0)
+	scan := commandScanner{}
 
 	for i := 0; i < len(cmd); i++ {
-		char := cmd[i]
-
-		if char == '"' || char == '\'' {
-			if !inQuotes {
-				inQuotes = true
-				quoteChar = char
-			} else if char == quoteChar {
-				inQuotes = false
-				quoteChar = 0
-			} else {
-				current += string(char)
-			}
-		} else if char == ' ' && !inQuotes {
-			if current != "" {
-				parts = append(parts, current)
-				current = ""
-			}
-		} else {
-			current += string(char)
+		// A backslash escapes the next character, except inside single quotes
+		// where a shell treats it literally too.
+		if cmd[i] == '\\' && scan.quoteChar != '\'' && i+1 < len(cmd) {
+			i++
+			scan.current = append(scan.current, cmd[i])
+			continue
+		}
+		if arg, complete := scan.step(cmd[i]); complete {
+			parts = append(parts, arg)
 		}
 	}
 
-	if current != "" {
-		parts = append(parts, current)
+	if arg, complete := scan.finish(); complete {
+		parts = append(parts, arg)
 	}
 
 	return parts
+}
+
+// commandScanner tracks quoting while splitting a command string
+type commandScanner struct {
+	current   []byte
+	quoteChar byte
+	inQuotes  bool
+	// quoted records that this argument was written with quotes, so that ""
+	// produces an empty argument rather than nothing at all.
+	quoted bool
+}
+
+// step consumes one character, returning an argument when one is complete
+func (s *commandScanner) step(char byte) (arg string, complete bool) {
+	switch {
+	case (char == '"' || char == '\'') && !s.inQuotes:
+		s.inQuotes = true
+		s.quoteChar = char
+		s.quoted = true
+
+	case s.inQuotes && char == s.quoteChar:
+		s.inQuotes = false
+		s.quoteChar = 0
+
+	case (char == ' ' || char == '\t') && !s.inQuotes:
+		return s.finish()
+
+	default:
+		s.current = append(s.current, char)
+	}
+
+	return "", false
+}
+
+// finish closes off the argument being scanned, if there is one
+func (s *commandScanner) finish() (arg string, complete bool) {
+	if len(s.current) == 0 && !s.quoted {
+		return "", false
+	}
+
+	arg = string(s.current)
+	s.current = s.current[:0]
+	s.quoted = false
+	return arg, true
 }
 
 // Signal sends a signal to the process

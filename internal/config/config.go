@@ -36,6 +36,10 @@ const (
 	defaultStartSecs      = 1
 	defaultMaxRestarts    = 3
 	defaultPriority       = 999
+
+	// maxSocketPathLen is the smallest sockaddr_un limit across the platforms
+	// supavisor runs on (104 on macOS, 108 on Linux), including the terminator.
+	maxSocketPathLen = 104
 )
 
 // intOrDefault returns the configured value, treating an absent setting rather
@@ -495,7 +499,58 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.validateLogPaths(); err != nil {
+		return err
+	}
+
+	return c.validateSocketPath()
+}
+
+// validateLogPaths rejects two programs writing to the same log file.
+//
+// Supavisor owns the log descriptor so that rotation works, which means two
+// programs sharing a path would rotate the same files independently and
+// destroy each other's output.
+func (c *Config) validateLogPaths() error {
+	owners := make(map[string]string)
+
+	for _, name := range sortedProgramNames(c.Programs) {
+		prog := c.Programs[name]
+		for _, path := range []string{prog.StdoutLogfile, prog.StderrLogfile} {
+			if path == "" {
+				continue
+			}
+			// One program pointing both its streams at one file is fine: they
+			// share a single writer.
+			if owner, taken := owners[path]; taken && owner != name {
+				return fmt.Errorf("programs %s and %s both log to %s: each log file must belong to one program", owner, name, path)
+			}
+			owners[path] = name
+		}
+	}
+
 	return nil
+}
+
+// validateSocketPath rejects a socket path the kernel cannot bind.
+//
+// The sockaddr_un limit is around 104 bytes, and exceeding it surfaces as a
+// bare "bind: invalid argument" from the listener with nothing to point at.
+func (c *Config) validateSocketPath() error {
+	if len(c.Supavisor.Socket) >= maxSocketPathLen {
+		return fmt.Errorf("socket path is %d bytes, which exceeds the %d byte limit for a unix socket: %s",
+			len(c.Supavisor.Socket), maxSocketPathLen-1, c.Supavisor.Socket)
+	}
+	return nil
+}
+
+func sortedProgramNames(programs map[string]*ProgramConfig) []string {
+	names := make([]string, 0, len(programs))
+	for name := range programs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (c *Config) checkCircularDependency(name string, visited, recStack map[string]bool) error {

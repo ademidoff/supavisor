@@ -186,7 +186,9 @@ setting takes its default.
   - When not specified, logs are written to stdout (if running in a terminal)
   - Can be overridden with the `-logfile` command-line flag
 - `pidfile`: Path to PID file (default: `/var/run/supavisor.pid`)
-- `socket`: Path to Unix domain socket for CLI communication (default: `/tmp/supavisor.sock`)
+- `socket`: Path to Unix domain socket for CLI communication (default:
+  `/tmp/supavisor.sock`). Unix sockets cap the path at about 104 bytes; a longer
+  one is rejected at startup rather than failing with `bind: invalid argument`.
 - `socket_group`: Group given ownership of the control socket, by name or numeric
   gid (optional). The socket is created with mode `0660`, so by default only the
   user running supavisor can use `sctl`. Set this to an administrators' group to
@@ -198,7 +200,11 @@ setting takes its default.
 
 Each program is defined under `programs` with its name as the key:
 
-- `command`: Command to run (required)
+- `command`: Command to run (required). This is not run through a shell: there is
+  no expansion, globbing or substitution. Quoting and backslash escapes are
+  supported, so `command: /bin/app --msg "hello world"` and `--path a\ b` both
+  work. To use shell features, invoke a shell explicitly:
+  `command: /bin/sh -c "a && b"`.
 - `directory`: Working directory for the process
 - `autostart`: Start process automatically on supavisor startup (default: true)
 - `autorestart`: Restart policy - `always`, `never`, or `unexpected` (default: unexpected)
@@ -416,6 +422,10 @@ Notes:
   to `/dev/null` and nothing is captured.
 - If both streams point at the same file, they share one pipe, so their output
   interleaves in the order it was written.
+- Two different programs may not share a log file. Supavisor owns each log
+  descriptor so that rotation works, so sharing one would have two writers
+  rotating the same files and destroying each other's output. This is rejected at
+  startup.
 - Because output flows through supavisor, a process that logs faster than the disk
   can absorb will eventually block on write, and a process that outlives a
   supavisor crash will see its output descriptor close.
