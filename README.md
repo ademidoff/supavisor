@@ -231,13 +231,38 @@ Circular dependencies are detected and rejected during configuration validation.
 
 ## Log Rotation
 
-Log files are automatically rotated when they exceed the configured maximum size. The rotation strategy:
+Processes do not write to their log files directly. Supavisor gives each stream a
+pipe, reads it line by line, and writes to the log file itself. This is what makes
+rotation reliable: the log descriptor belongs to supavisor, so renaming the file
+and opening a new one actually redirects subsequent output. A process holding its
+own descriptor would keep writing to the renamed file no matter what the supervisor
+did to the directory entry.
+
+When a line would take the file past its configured maximum size:
 
 1. Existing backups are rotated (`.1` -> `.2`, `.2` -> `.3`, etc.)
 2. Current log is moved to `.1`
-3. A new file is created
-4. Old backups beyond the configured count are removed
-5. Logs older than `maxage` days are automatically deleted
+3. A new file is created and output continues into it
+4. Backups beyond the configured count are removed
+5. Backups older than `maxage` days are removed
+
+Because rotation happens on line boundaries, a log file can exceed its maximum by
+at most one line. A run of output longer than 64KB with no newline in it is written
+out in pieces rather than buffered.
+
+Backup pruning runs when a log is opened and at each rotation, so a process that
+never produces enough output to rotate keeps its existing backups until it is
+next restarted.
+
+Notes:
+
+- If a stream has no `stdout_logfile`/`stderr_logfile` configured, it is connected
+  to `/dev/null` and nothing is captured.
+- If both streams point at the same file, they share one pipe, so their output
+  interleaves in the order it was written.
+- Because output flows through supavisor, a process that logs faster than the disk
+  can absorb will eventually block on write, and a process that outlives a
+  supavisor crash will see its output descriptor close.
 
 ## Examples
 

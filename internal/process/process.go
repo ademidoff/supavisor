@@ -1,9 +1,11 @@
 package process
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -18,8 +20,16 @@ import (
 const (
 	maxBackoffSeconds       = 30
 	gracefulShutdownTimeout = 5 * time.Second
-	logRotationInterval     = 5 * time.Second
 	restartWaitInterval     = 100 * time.Millisecond
+
+	// logDrainTimeout bounds how long we wait for a pipe to reach EOF after the
+	// process exits. A grandchild that inherited the descriptor keeps it open,
+	// so the wait cannot be unbounded.
+	logDrainTimeout = 2 * time.Second
+
+	// maxLogLineBytes bounds how much of a newline-free run of output is held in
+	// memory before it is written out in pieces.
+	maxLogLineBytes = 64 * 1024
 
 	// maxBackoffShift caps the exponent used for restart backoff. Without it
 	// 1<<(restartCount-1) overflows int once max_restarts grows past ~63 and
@@ -42,27 +52,32 @@ type Process struct {
 	onStateChange    func(name string, prevState, newState State)
 	onDependencyStop func(name string)
 
-	cmd           *exec.Cmd
-	cancel        context.CancelFunc
-	monitorDone   chan struct{}
-	stdoutFile    *os.File
-	stderrFile    *os.File
-	stdoutRotator *logrotate.Rotator
-	stderrRotator *logrotate.Rotator
-	lastError     error
-	startTime     time.Time
-	stopTime      time.Time
-	state         State
+	cmd         *exec.Cmd
+	cancel      context.CancelFunc
+	monitorDone chan struct{}
+	lastError   error
+	startTime   time.Time
+	stopTime    time.Time
+	state       State
+	streams     []*logStream
 
 	// mu guards all mutable run state, from cmd down to stoppedExternally.
 	// The monitor goroutine writes it while the IPC path reads it.
-	mu           sync.RWMutex
-	pid          int
-	exitCode     int
-	restartCount int
-	// sharedLogFile indicates if stdout and stderr share the same file handle
-	sharedLogFile     bool
+	mu                sync.RWMutex
+	pid               int
+	exitCode          int
+	restartCount      int
 	stoppedExternally bool
+}
+
+// logStream captures one child output stream. The child writes into a pipe and
+// a drain goroutine copies it into the rotating log file, so that supavisor
+// rather than the child owns the log descriptor.
+type logStream struct {
+	sink     *logrotate.Writer
+	readEnd  *os.File
+	childEnd *os.File
+	done     chan struct{}
 }
 
 // NewProcess creates a new process instance
@@ -168,15 +183,18 @@ func (p *Process) Start() error {
 	p.logger.Info("Setting state to STARTING")
 	p.setState(StateStarting)
 
-	p.logger.Info("Setting up log files")
-	if err := p.setupLogFiles(ctx); err != nil {
+	p.logger.Info("Setting up log capture")
+	stdout, stderr, err := p.startLogging()
+	if err != nil {
+		p.stopLogging()
 		cancel()
 		p.setState(StateFatal)
-		return fmt.Errorf("failed to setup log files: %w", err)
+		return fmt.Errorf("failed to set up log capture: %w", err)
 	}
 
-	cmd, err := p.buildCommand(ctx)
+	cmd, err := p.buildCommand(ctx, stdout, stderr)
 	if err != nil {
+		p.stopLogging()
 		cancel()
 		p.setState(StateFatal)
 		return err
@@ -185,10 +203,15 @@ func (p *Process) Start() error {
 	p.logger.Info("Executing command", "command", cmd.String())
 	if err := cmd.Start(); err != nil {
 		p.logger.Error("Failed to start", "error", err)
+		p.stopLogging()
 		cancel()
 		p.setState(StateFatal)
 		return fmt.Errorf("failed to start process: %w", err)
 	}
+
+	// The child has its own copies now. Until ours are closed the pipes never
+	// reach EOF and the drain goroutines would never finish.
+	p.closeChildEnds()
 
 	monitorDone := make(chan struct{})
 
@@ -210,8 +233,9 @@ func (p *Process) Start() error {
 	return nil
 }
 
-// buildCommand assembles the exec.Cmd for a single run
-func (p *Process) buildCommand(ctx context.Context) (*exec.Cmd, error) {
+// buildCommand assembles the exec.Cmd for a single run. A nil stdout or stderr
+// descriptor leaves the stream connected to /dev/null.
+func (p *Process) buildCommand(ctx context.Context, stdout, stderr *os.File) (*exec.Cmd, error) {
 	p.logger.Debug("Parsing command", "command", p.config.Command)
 	parts := parseCommand(p.config.Command)
 	if len(parts) == 0 {
@@ -235,16 +259,13 @@ func (p *Process) buildCommand(ctx context.Context) (*exec.Cmd, error) {
 	}
 	cmd.Env = env
 
-	// Leave Stdout/Stderr nil when no log file is configured: assigning a nil
+	// Leave Stdout/Stderr nil when there is no capture pipe: assigning a nil
 	// *os.File would hand the child a closed descriptor instead of /dev/null.
-	p.mu.RLock()
-	stdoutFile, stderrFile := p.stdoutFile, p.stderrFile
-	p.mu.RUnlock()
-	if stdoutFile != nil {
-		cmd.Stdout = stdoutFile
+	if stdout != nil {
+		cmd.Stdout = stdout
 	}
-	if stderrFile != nil {
-		cmd.Stderr = stderrFile
+	if stderr != nil {
+		cmd.Stderr = stderr
 	}
 
 	return cmd, nil
@@ -292,7 +313,7 @@ func (p *Process) Stop() error {
 		if cancel != nil {
 			cancel()
 		}
-		p.closeLogFiles()
+		p.stopLogging()
 		p.setState(StateStopped)
 		return nil
 	}
@@ -329,7 +350,7 @@ func (p *Process) Stop() error {
 	}
 
 	p.logger.Info("Closing process log files")
-	p.closeLogFiles()
+	p.stopLogging()
 
 	p.logger.Info("Process stopped successfully")
 	return nil
@@ -352,6 +373,9 @@ func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done chan struct{}
 	defer close(done)
 
 	err := cmd.Wait()
+
+	// Flush whatever the process left in the pipes before recording the exit.
+	p.stopLogging()
 
 	p.mu.Lock()
 	p.exitCode = exitCodeOf(cmd, err)
@@ -468,134 +492,162 @@ func exitCodeOf(cmd *exec.Cmd, waitErr error) int {
 	return -1
 }
 
-// setupLogFiles sets up log file rotation
-func (p *Process) setupLogFiles(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Handles from a previous run would otherwise leak on every restart.
-	p.closeLogFilesLocked()
-
+// startLogging creates this run's capture pipes and returns the descriptors to
+// hand to the child. A nil descriptor means the stream is discarded.
+func (p *Process) startLogging() (stdout, stderr *os.File, err error) {
 	stdoutPath := p.config.StdoutLogfile
 	stderrPath := p.config.StderrLogfile
-	p.sharedLogFile = stdoutPath != "" && stderrPath != "" && stdoutPath == stderrPath
 
-	if p.sharedLogFile {
-		file, err := openLogFile(stdoutPath)
+	var stream *logStream
+
+	// One file means one pipe, so the two streams interleave in write order
+	// instead of racing two writers against the same path.
+	if stdoutPath != "" && stdoutPath == stderrPath {
+		stream, err = p.addLogStream(
+			stdoutPath,
+			max(p.config.StdoutLogfileMaxBytes, p.config.StderrLogfileMaxBytes),
+			max(p.config.StdoutLogfileBackups, p.config.StderrLogfileBackups),
+			max(p.config.StdoutLogfileMaxAge, p.config.StderrLogfileMaxAge),
+		)
 		if err != nil {
-			return fmt.Errorf("failed to open shared log file: %w", err)
+			return nil, nil, err
 		}
-		p.stdoutFile = file
-		p.stderrFile = file
-
-		maxBytes := max(p.config.StdoutLogfileMaxBytes, p.config.StderrLogfileMaxBytes)
-		backups := max(p.config.StdoutLogfileBackups, p.config.StderrLogfileBackups)
-		maxAge := max(p.config.StdoutLogfileMaxAge, p.config.StderrLogfileMaxAge)
-
-		p.stdoutRotator = logrotate.NewRotator(stdoutPath, maxBytes, backups, maxAge)
-		p.stderrRotator = nil
-	} else {
-		if stdoutPath != "" {
-			file, err := openLogFile(stdoutPath)
-			if err != nil {
-				return fmt.Errorf("failed to open stdout log: %w", err)
-			}
-			p.stdoutFile = file
-			p.stdoutRotator = logrotate.NewRotator(
-				stdoutPath,
-				p.config.StdoutLogfileMaxBytes,
-				p.config.StdoutLogfileBackups,
-				p.config.StdoutLogfileMaxAge,
-			)
-		}
-
-		if stderrPath != "" {
-			file, err := openLogFile(stderrPath)
-			if err != nil {
-				return fmt.Errorf("failed to open stderr log: %w", err)
-			}
-			p.stderrFile = file
-			p.stderrRotator = logrotate.NewRotator(
-				stderrPath,
-				p.config.StderrLogfileMaxBytes,
-				p.config.StderrLogfileBackups,
-				p.config.StderrLogfileMaxAge,
-			)
-		}
+		return stream.childEnd, stream.childEnd, nil
 	}
 
-	go p.monitorLogRotation(ctx)
-
-	return nil
-}
-
-// openLogFile opens a log file for appending, creating its directory if needed
-func openLogFile(path string) (*os.File, error) {
-	if dir := getDir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("failed to create log directory: %w", err)
+	if stdoutPath != "" {
+		stream, err = p.addLogStream(
+			stdoutPath,
+			p.config.StdoutLogfileMaxBytes,
+			p.config.StdoutLogfileBackups,
+			p.config.StdoutLogfileMaxAge,
+		)
+		if err != nil {
+			return nil, nil, err
 		}
+		stdout = stream.childEnd
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if stderrPath != "" {
+		stream, err = p.addLogStream(
+			stderrPath,
+			p.config.StderrLogfileMaxBytes,
+			p.config.StderrLogfileBackups,
+			p.config.StderrLogfileMaxAge,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		stderr = stream.childEnd
+	}
+
+	return stdout, stderr, nil
 }
 
-// monitorLogRotation periodically checks and rotates logs
-func (p *Process) monitorLogRotation(ctx context.Context) {
-	ticker := time.NewTicker(logRotationInterval)
-	defer ticker.Stop()
+// addLogStream opens a rotating log file and starts draining a pipe into it
+func (p *Process) addLogStream(path string, maxBytes int64, backups, maxAge int) (*logStream, error) {
+	sink, err := logrotate.NewWriter(path, maxBytes, backups, maxAge)
+	if err != nil {
+		return nil, err
+	}
+
+	readEnd, childEnd, err := os.Pipe()
+	if err != nil {
+		_ = sink.Close()
+		return nil, fmt.Errorf("failed to create log pipe for %s: %w", path, err)
+	}
+
+	stream := &logStream{
+		sink:     sink,
+		readEnd:  readEnd,
+		childEnd: childEnd,
+		done:     make(chan struct{}),
+	}
+
+	p.mu.Lock()
+	p.streams = append(p.streams, stream)
+	p.mu.Unlock()
+
+	go func() {
+		defer close(stream.done)
+		if err := drainStream(stream.sink, stream.readEnd); err != nil {
+			p.logger.Warn("Log capture ended with an error", "path", path, "error", err)
+		}
+	}()
+
+	return stream, nil
+}
+
+// drainStream copies the pipe into the log one line at a time. Copying in bulk
+// would hand the writer chunks far larger than the rotation threshold, so the
+// log would overshoot maxbytes by a whole read buffer on every rotation.
+func drainStream(sink io.Writer, pipe io.Reader) error {
+	reader := bufio.NewReaderSize(pipe, maxLogLineBytes)
 
 	for {
-		select {
-		case <-ticker.C:
-			p.mu.RLock()
-			stdoutRotator := p.stdoutRotator
-			stderrRotator := p.stderrRotator
-			p.mu.RUnlock()
+		line, err := reader.ReadSlice('\n')
+		if len(line) > 0 {
+			if _, writeErr := sink.Write(line); writeErr != nil {
+				return writeErr
+			}
+		}
 
-			if stdoutRotator != nil {
-				if err := stdoutRotator.CheckAndRotate(); err != nil {
-					p.logger.Error("Failed to rotate stdout log", "error", err)
-				}
-			}
-			if stderrRotator != nil {
-				if err := stderrRotator.CheckAndRotate(); err != nil {
-					p.logger.Error("Failed to rotate stderr log", "error", err)
-				}
-			}
-		case <-ctx.Done():
-			return
+		switch {
+		case err == nil, errors.Is(err, bufio.ErrBufferFull):
+			// A line longer than the buffer is written in pieces
+			continue
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed):
+			return nil
+		default:
+			return err
 		}
 	}
 }
 
-// closeLogFiles closes log file handles
-func (p *Process) closeLogFiles() {
+// closeChildEnds releases the parent's copy of each pipe write end, which the
+// child inherited during Start
+func (p *Process) closeChildEnds() {
+	p.mu.RLock()
+	streams := p.streams
+	p.mu.RUnlock()
+
+	for _, stream := range streams {
+		if stream.childEnd != nil {
+			_ = stream.childEnd.Close()
+			stream.childEnd = nil
+		}
+	}
+}
+
+// stopLogging drains what the process left in the pipes and closes the log
+// files. It is safe to call more than once.
+func (p *Process) stopLogging() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.closeLogFilesLocked()
-}
+	streams := p.streams
+	p.streams = nil
+	p.mu.Unlock()
 
-// closeLogFilesLocked closes log file handles. Must be called with mu held.
-func (p *Process) closeLogFilesLocked() {
-	if p.stdoutFile != nil {
-		if err := p.stdoutFile.Close(); err != nil {
-			p.logger.Warn("failed to close stdout log file", "error", err)
+	for _, stream := range streams {
+		if stream.childEnd != nil {
+			_ = stream.childEnd.Close()
+			stream.childEnd = nil
 		}
-		if p.sharedLogFile {
-			// Both streams share one handle, so it must not be closed twice
-			p.stderrFile = nil
-		}
-		p.stdoutFile = nil
-	}
-	if p.stderrFile != nil {
-		if err := p.stderrFile.Close(); err != nil {
-			p.logger.Warn("failed to close stderr log file", "error", err)
-		}
-		p.stderrFile = nil
-	}
 
-	p.stdoutRotator = nil
-	p.stderrRotator = nil
+		// A pipe only reaches EOF once every writer has closed it, and a
+		// grandchild that outlived the process still holds one, so the drain
+		// gets a bounded window before we take the read end away from it.
+		select {
+		case <-stream.done:
+		case <-time.After(logDrainTimeout):
+			p.logger.Warn("Log capture still open after exit, closing it", "path", stream.sink.Path())
+			_ = stream.readEnd.Close()
+			<-stream.done
+		}
+
+		_ = stream.readEnd.Close()
+		if err := stream.sink.Close(); err != nil {
+			p.logger.Warn("Failed to close log file", "path", stream.sink.Path(), "error", err)
+		}
+	}
 }
 
 // parseCommand parses a command string into parts
@@ -633,20 +685,6 @@ func parseCommand(cmd string) []string {
 	}
 
 	return parts
-}
-
-func getDir(path string) string {
-	idx := -1
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return ""
-	}
-	return path[:idx]
 }
 
 // Signal sends a signal to the process
