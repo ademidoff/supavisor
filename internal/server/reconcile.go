@@ -221,6 +221,12 @@ func (s *Server) setDesired(name string, desired DesiredState) error {
 		return fmt.Errorf("process %s not found", name)
 	}
 	s.desired[name] = desired
+
+	// Nothing is holding back a program nobody is asking for, so a reason
+	// recorded while it was wanted must not outlive the request.
+	if desired == DesiredStopped {
+		delete(s.blockedReason, name)
+	}
 	return nil
 }
 

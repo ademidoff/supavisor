@@ -32,10 +32,15 @@ const (
 
 // ProcessStatusInfo contains status information about a process
 type ProcessStatusInfo struct {
-	Name         string
-	State        process.State
-	Health       process.Health
-	Uptime       string
+	Name    string
+	State   process.State
+	Desired DesiredState
+	Health  process.Health
+	Uptime  string
+
+	// Reason is why a program is not running, and is empty whenever there is
+	// nothing to explain.
+	Reason       string
 	PID          int
 	ExitCode     int
 	RestartCount int
@@ -312,7 +317,9 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 		statuses = append(statuses, ProcessStatusInfo{
 			Name:         name,
 			State:        state,
+			Desired:      s.desired[name],
 			Health:       proc.GetHealth(),
+			Reason:       s.notRunningReason(name, state, restartCount),
 			PID:          pid,
 			ExitCode:     exitCode,
 			RestartCount: restartCount,
@@ -326,6 +333,31 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 	})
 
 	return statuses
+}
+
+// notRunningReason explains why a program is not running, or returns an empty
+// string when there is nothing to explain.
+//
+// A program can be held back by a dependency, or it can have stopped trying on
+// its own; both leave it not running while it is still wanted, and the state
+// alone does not say which. Must be called with processMutex held.
+func (s *Server) notRunningReason(name string, state process.State, restartCount int) string {
+	if reason := s.blockedReason[name]; reason != "" {
+		return reason
+	}
+	if state == process.StateFatal {
+		return fmt.Sprintf("gave up after %s", restartPhrase(restartCount))
+	}
+	return ""
+}
+
+// restartPhrase renders a restart count as something that reads in a sentence
+func restartPhrase(restarts int) string {
+	unit := "restarts"
+	if restarts == 1 {
+		unit = "restart"
+	}
+	return fmt.Sprintf("%d %s", restarts, unit)
 }
 
 // onProcessStateChange is called when a process state changes

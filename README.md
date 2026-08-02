@@ -101,6 +101,9 @@ nohup ./supavisor -c supavisor.yml &
 # Check status
 ./sctl status
 
+# Look at one process, including why it is not running
+./sctl status webapp
+
 # Start a process
 ./sctl start webapp
 
@@ -147,6 +150,7 @@ socket is therefore created `0660`, owned by `socket_group` when one is set.
 
 Commands:
 - `status`: Show status of all processes
+- `status <name>`: Show one process in detail, including why it is not running
 - `start <name>`: Start a specific process
 - `stop <name>`: Stop a specific process
 - `restart <name>`: Restart a specific process
@@ -264,6 +268,40 @@ restart backoff cancels that pending restart.
 
 The `HEALTH` column of `sctl status` reports separately on programs that declare a
 `health_check`; see [Health checks](#health-checks).
+
+### What a program is doing versus what it was asked to do
+
+A state on its own does not say whether anything is wrong: a `STOPPED` program may
+be one nobody has asked for, or one that wants to run and cannot. The `DESIRED`
+column separates them, and `sctl status <name>` says why:
+
+```
+$ sctl status
+NAME     STATE     DESIRED   HEALTH      PID     EXIT_CODE   RESTARTS   UPTIME
+----     -----     -------   ------      ---     ---------   --------   ------
+api      STOPPED   RUNNING   -           N/A     0           0          N/A
+db       RUNNING   RUNNING   UNHEALTHY   89734   0           0          8s
+doomed   FATAL     RUNNING   -           N/A     1           1          N/A
+idle     STOPPED   STOPPED   -           N/A     0           0          N/A
+
+$ sctl status api
+Name:        api
+State:       STOPPED
+Desired:     RUNNING
+Health:      -
+PID:         N/A
+Exit code:   0
+Restarts:    0
+Uptime:      N/A
+Reason:      dependency db is running but its health check is UNHEALTHY
+```
+
+`Reason` appears only when there is something to explain, and covers both ways a
+program can be wanted without running: held back by a dependency, as above, or
+having stopped trying on its own, where it reads `gave up after 1 restart`. A
+program that is running, or that nobody has asked for, has no `Reason` line. The
+same string is available to API clients in the `reason` field of the status
+response.
 
 ## Signals
 
@@ -513,7 +551,8 @@ Other behavior:
   names the program actually responsible, however far down the chain it is.
 - A program that is being held back logs why, once per distinct reason rather than
   on every pass of the reconcile loop. A dependency that stays down for an hour
-  costs one line, and the line changes as the reason does.
+  costs one line, and the line changes as the reason does. The same explanation is
+  available at any time from `sctl status <name>`.
 - A desired state persists: stopping a program keeps it stopped, and a program
   waiting on a dependency starts as soon as that dependency is up, with no second
   command needed.

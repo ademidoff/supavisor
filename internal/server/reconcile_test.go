@@ -294,6 +294,151 @@ func TestReconcile_ReportsABlockedStartOncePerReason(t *testing.T) {
 	}
 }
 
+// TestStatus_ExplainsAProgramThatIsWantedButNotRunning covers the pair of
+// fields that tell a stopped program that nobody asked for apart from one that
+// cannot start: a bare STOPPED says nothing about which it is.
+func TestStatus_ExplainsAProgramThatIsWantedButNotRunning(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"dep": {
+			Command: "/bin/sleep 60", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"dependent": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
+			StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	time.Sleep(1500 * time.Millisecond)
+
+	byName := statusByName(sv)
+	blocked, idle := byName["dependent"], byName["dep"]
+
+	// Both are STOPPED, and only the desired state separates them
+	if blocked.State != process.StateStopped || idle.State != process.StateStopped {
+		t.Fatalf("Expected both programs STOPPED, got %s and %s", blocked.State, idle.State)
+	}
+	if blocked.Desired != DesiredRunning {
+		t.Errorf("A program held back by a dependency should still be wanted, got %s", blocked.Desired)
+	}
+	if idle.Desired != DesiredStopped {
+		t.Errorf("A program with autostart false should not be wanted, got %s", idle.Desired)
+	}
+	if !strings.Contains(blocked.Reason, "dep") {
+		t.Errorf("Expected the status to name what it is waiting for, got %s", blocked.Reason)
+	}
+	if idle.Reason != "" {
+		t.Errorf("A program nobody asked for is not waiting for anything, got %s", idle.Reason)
+	}
+
+	// Once it is running there is nothing left to explain
+	if err := sv.StartProcess("dep"); err != nil {
+		t.Fatalf("StartProcess(dep) failed: %v", err)
+	}
+	waitForState(t, sv, "dependent", process.StateRunning, 10*time.Second)
+
+	if reason := statusByName(sv)["dependent"].Reason; reason != "" {
+		t.Errorf("A running program should not report a reason, got %s", reason)
+	}
+}
+
+// TestStatus_ForgetsTheReasonWhenAProgramIsNoLongerWanted keeps a stale
+// explanation from outliving the request it belonged to
+func TestStatus_ForgetsTheReasonWhenAProgramIsNoLongerWanted(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"dep": {
+			Command: "/bin/sleep 60", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"dependent": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
+			StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	time.Sleep(1500 * time.Millisecond)
+	if statusByName(sv)["dependent"].Reason == "" {
+		t.Fatal("Expected the blocked program to report a reason to begin with")
+	}
+
+	if err := sv.StopProcess("dependent"); err != nil {
+		t.Fatalf("StopProcess failed: %v", err)
+	}
+
+	status := statusByName(sv)["dependent"]
+	if status.Desired != DesiredStopped {
+		t.Errorf("Expected the program to be unwanted after a stop, got %s", status.Desired)
+	}
+	if status.Reason != "" {
+		t.Errorf("A program nobody is asking for is not waiting, got %s", status.Reason)
+	}
+}
+
+// TestStatus_ExplainsAProgramThatGaveUp covers the other way a program can be
+// wanted and not running. Nothing is holding it back, so there is no blocked
+// reason to report, and FATAL on its own does not say how it got there.
+func TestStatus_ExplainsAProgramThatGaveUp(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"doomed": {
+			Command: "/bin/sh -c 'exit 1'", Autostart: true,
+			Autorestart: config.RestartAlways, StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "doomed", process.StateFatal, 15*time.Second)
+
+	status := statusByName(sv)["doomed"]
+	if status.Desired != DesiredRunning {
+		t.Errorf("A program that gave up is still wanted, got %s", status.Desired)
+	}
+	if status.Reason != "gave up after 1 restart" {
+		t.Errorf("Expected the reason to say how it gave up, got %s", status.Reason)
+	}
+}
+
+func TestRestartPhrase(t *testing.T) {
+	tests := []struct {
+		want     string
+		restarts int
+	}{
+		{restarts: 0, want: "0 restarts"},
+		{restarts: 1, want: "1 restart"},
+		{restarts: 3, want: "3 restarts"},
+	}
+
+	for _, tt := range tests {
+		if got := restartPhrase(tt.restarts); got != tt.want {
+			t.Errorf("restartPhrase(%d) = %s, want %s", tt.restarts, got, tt.want)
+		}
+	}
+}
+
+func statusByName(sv *Server) map[string]ProcessStatusInfo {
+	statuses := sv.GetStatus()
+	byName := make(map[string]ProcessStatusInfo, len(statuses))
+	for _, status := range statuses {
+		byName[status.Name] = status
+	}
+	return byName
+}
+
 // lockedBuffer collects log output written from the reconcile loop while the
 // test reads it
 type lockedBuffer struct {

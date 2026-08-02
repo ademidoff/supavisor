@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ademidoff/supavisor/internal/api"
+	"github.com/ademidoff/supavisor/internal/config"
 )
 
 // dialTestIPC connects to a test IPC socket
@@ -128,6 +129,48 @@ func TestIPC_BoundsConcurrentConnections(t *testing.T) {
 	if got := len(ipc.slots); got > maxConnections {
 		t.Errorf("Serving %d connections, past the cap of %d", got, maxConnections)
 	}
+}
+
+// TestIPC_StatusForOneProcess covers the detail view sctl asks for when it is
+// given a program name
+func TestIPC_StatusForOneProcess(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"api": {Command: "/bin/sleep 60", StartSecs: 1, MaxRestarts: 1},
+		"db":  {Command: "/bin/sleep 60", StartSecs: 1, MaxRestarts: 1},
+	})
+	ipc := &IPCServer{server: sv}
+
+	all := ipc.handleStatus(nil)
+	if got := len(processesOf(t, all)); got != 2 {
+		t.Errorf("Expected every program without a name, got %d", got)
+	}
+
+	one := processesOf(t, ipc.handleStatus([]string{"api"}))
+	if len(one) != 1 || one[0].Name != "api" {
+		t.Fatalf("Expected only api, got %v", one)
+	}
+
+	missing := ipc.handleStatus([]string{"nope"})
+	if missing.Success {
+		t.Fatal("Expected an unknown program to be reported as an error")
+	}
+	if !strings.Contains(missing.Message, "nope") {
+		t.Errorf("Expected the error to name the program, got: %s", missing.Message)
+	}
+}
+
+func processesOf(t *testing.T, resp *api.Response) []api.ProcessStatus {
+	t.Helper()
+
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected status data, got %#v", resp.Data)
+	}
+	statuses, ok := data["processes"].([]api.ProcessStatus)
+	if !ok {
+		t.Fatalf("Expected a process list, got %#v", data["processes"])
+	}
+	return statuses
 }
 
 func TestLookupGroupID_AcceptsANumericGroup(t *testing.T) {

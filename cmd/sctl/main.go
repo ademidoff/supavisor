@@ -17,6 +17,14 @@ import (
 const (
 	tabPadding = 3
 
+	// States a program has a live PID in, and the placeholders used when a
+	// column has nothing to report
+	stateRunning  = "RUNNING"
+	stateStarting = "STARTING"
+	stateStopping = "STOPPING"
+	healthNone    = "NONE"
+	notAvailable  = "N/A"
+
 	// dialTimeout fails fast when the daemon is not listening.
 	dialTimeout = 5 * time.Second
 
@@ -66,61 +74,108 @@ func main() {
 
 	// Print response based on command
 	if command == api.CommandStatus {
-		printStatus(*resp)
+		// A named program gets the detail view, which has room for why it is
+		// not running; the table stays narrow enough to read.
+		if len(args) > 0 {
+			printProcessDetail(*resp)
+		} else {
+			printStatus(*resp)
+		}
 		return
 	}
 	fmt.Println(resp.Message)
 }
 
 func printStatus(resp api.Response) {
-	data, ok := resp.Data.(map[string]any)
-	if !ok {
-		fmt.Println(resp.Message)
-		return
-	}
-
-	processesData, ok := data["processes"].([]any)
+	rows, ok := statusRows(resp)
 	if !ok {
 		fmt.Println(resp.Message)
 		return
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, tabPadding, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tHEALTH\tPID\tEXIT_CODE\tRESTARTS\tUPTIME")
-	fmt.Fprintln(w, "----\t-----\t------\t---\t---------\t--------\t------")
+	fmt.Fprintln(w, "NAME\tSTATE\tDESIRED\tHEALTH\tPID\tEXIT_CODE\tRESTARTS\tUPTIME")
+	fmt.Fprintln(w, "----\t-----\t-------\t------\t---\t---------\t--------\t------")
 
-	for _, p := range processesData {
-		procMap, ok := p.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, row := range rows {
+		state := getString(row, "state")
 
-		name := getString(procMap, "name")
-		state := getString(procMap, "state")
-		pid := getInt(procMap, "pid")
-		exitCode := getInt(procMap, "exit_code")
-		restarts := getInt(procMap, "restart_count")
-		uptime := getString(procMap, "uptime")
-
-		pidStr := "N/A"
-		if slices.Contains([]string{"RUNNING", "STARTING", "STOPPING"}, state) {
-			pidStr = fmt.Sprintf("%d", pid)
-		}
-
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
-			name, state, healthColumn(getString(procMap, "health")), pidStr, exitCode, restarts, uptime)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
+			getString(row, "name"), state, getString(row, "desired"),
+			healthColumn(getString(row, "health")), pidColumn(state, getInt(row, "pid")),
+			getInt(row, "exit_code"), getInt(row, "restart_count"), getString(row, "uptime"))
 	}
 
 	_ = w.Flush()
 }
 
+// printProcessDetail reports on a single program, including why it is not
+// running when it is wanted but is not
+func printProcessDetail(resp api.Response) {
+	rows, ok := statusRows(resp)
+	if !ok || len(rows) == 0 {
+		fmt.Println(resp.Message)
+		return
+	}
+	row := rows[0]
+	state := getString(row, "state")
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, tabPadding, ' ', 0)
+	fmt.Fprintf(w, "Name:\t%s\n", getString(row, "name"))
+	fmt.Fprintf(w, "State:\t%s\n", state)
+	fmt.Fprintf(w, "Desired:\t%s\n", getString(row, "desired"))
+	fmt.Fprintf(w, "Health:\t%s\n", healthColumn(getString(row, "health")))
+	fmt.Fprintf(w, "PID:\t%s\n", pidColumn(state, getInt(row, "pid")))
+	fmt.Fprintf(w, "Exit code:\t%d\n", getInt(row, "exit_code"))
+	fmt.Fprintf(w, "Restarts:\t%d\n", getInt(row, "restart_count"))
+	fmt.Fprintf(w, "Uptime:\t%s\n", getString(row, "uptime"))
+
+	// Only a program with something to explain has a reason: it is held back by
+	// a dependency, or it stopped trying on its own.
+	if reason := getString(row, "reason"); reason != "" {
+		fmt.Fprintf(w, "Reason:\t%s\n", reason)
+	}
+
+	_ = w.Flush()
+}
+
+// statusRows extracts the process list from a status response
+func statusRows(resp api.Response) ([]map[string]any, bool) {
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	processes, ok := data["processes"].([]any)
+	if !ok {
+		return nil, false
+	}
+
+	rows := make([]map[string]any, 0, len(processes))
+	for _, p := range processes {
+		row, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, true
+}
+
 // healthColumn renders the health of a program. Programs without a health
 // check, and programs that are not running, have nothing to report.
 func healthColumn(health string) string {
-	if health == "" || health == "NONE" {
+	if health == "" || health == healthNone {
 		return "-"
 	}
 	return health
+}
+
+// pidColumn renders the PID of a program that has one
+func pidColumn(state string, pid int) string {
+	if slices.Contains([]string{stateRunning, stateStarting, stateStopping}, state) {
+		return fmt.Sprintf("%d", pid)
+	}
+	return notAvailable
 }
 
 func getString(m map[string]any, key string) string {
@@ -201,6 +256,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  status              Show status of all processes")
+	fmt.Println("  status <name>       Show one process in detail, including why it is not running")
 	fmt.Println("  start <name>        Start a process")
 	fmt.Println("  stop <name>         Stop a process")
 	fmt.Println("  restart <name>      Restart a process")
