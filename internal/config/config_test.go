@@ -76,8 +76,11 @@ programs:
 		t.Errorf("Expected autorestart to be always, got %s", prog.Autorestart)
 	}
 
-	if len(prog.DependsOn) != 1 || prog.DependsOn[0] != "database" {
+	if len(prog.DependsOn) != 1 || prog.DependsOn[0].Name != "database" {
 		t.Errorf("Expected depends_on to be [database], got %v", prog.DependsOn)
+	}
+	if got := prog.DependsOn[0].Condition; got != ConditionStarted {
+		t.Errorf("Expected the list form to wait for started, got %s", got)
 	}
 }
 
@@ -343,7 +346,7 @@ programs:
 	if cfg.Supavisor.PidFile != "/tmp/sv.pid" {
 		t.Errorf("expected pidfile from main file, got %s", cfg.Supavisor.PidFile)
 	}
-	if got := cfg.Programs["extra1"].DependsOn; len(got) != 1 || got[0] != "base" {
+	if got := cfg.Programs["extra1"].DependsOn; len(got) != 1 || got[0].Name != "base" {
 		t.Errorf("expected extra1 depends_on=[base], got %v", got)
 	}
 }
@@ -488,7 +491,7 @@ func TestParseConfig_MultifileFixture(t *testing.T) {
 
 	g := dependency.NewGraph()
 	for name, prog := range cfg.Programs {
-		g.AddNode(name, prog.DependsOn)
+		g.AddNode(name, prog.DependencyNames())
 	}
 	order, err := g.TopologicalSort()
 	if err != nil {
@@ -648,11 +651,11 @@ func TestValidate(t *testing.T) {
 				Programs: map[string]*ProgramConfig{
 					"app1": {
 						Name:      "app1",
-						DependsOn: []string{},
+						DependsOn: []Dependency{},
 					},
 					"app2": {
 						Name:      "app2",
-						DependsOn: []string{"app1"},
+						DependsOn: []Dependency{{Name: "app1"}},
 					},
 				},
 			},
@@ -664,11 +667,11 @@ func TestValidate(t *testing.T) {
 				Programs: map[string]*ProgramConfig{
 					"app1": {
 						Name:      "app1",
-						DependsOn: []string{"app2"},
+						DependsOn: []Dependency{{Name: "app2"}},
 					},
 					"app2": {
 						Name:      "app2",
-						DependsOn: []string{"app1"},
+						DependsOn: []Dependency{{Name: "app1"}},
 					},
 				},
 			},
@@ -680,7 +683,7 @@ func TestValidate(t *testing.T) {
 				Programs: map[string]*ProgramConfig{
 					"app1": {
 						Name:      "app1",
-						DependsOn: []string{"nonexistent"},
+						DependsOn: []Dependency{{Name: "nonexistent"}},
 					},
 				},
 			},

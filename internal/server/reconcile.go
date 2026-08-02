@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ademidoff/supavisor/internal/config"
 	"github.com/ademidoff/supavisor/internal/process"
 )
 
@@ -117,22 +118,44 @@ func (s *Server) runAction(name string, action func() error) {
 	}()
 }
 
-// dependenciesSatisfied reports whether every program this one depends on is
-// running, and if not, which one is holding it back
+// dependenciesSatisfied reports whether every program this one depends on has
+// reached the condition it is waited on for, and if not, which one is holding
+// it back
 func (s *Server) dependenciesSatisfied(name string) (satisfied bool, reason string) {
-	for _, dep := range s.dependencyGraph.GetDependencies(name) {
+	for _, dep := range s.dependenciesOf(name) {
 		s.processMutex.RLock()
-		depProc, exists := s.processes[dep]
+		depProc, exists := s.processes[dep.Name]
 		s.processMutex.RUnlock()
 
 		if !exists {
-			return false, fmt.Sprintf("dependency %s is not configured", dep)
+			return false, fmt.Sprintf("dependency %s is not configured", dep.Name)
 		}
 		if state := depProc.GetState(); state != process.StateRunning {
-			return false, fmt.Sprintf("dependency %s is %s", dep, state)
+			return false, fmt.Sprintf("dependency %s is %s", dep.Name, state)
+		}
+		// Running only means the process is alive. A program that initializes
+		// after startup is not ready to be depended on until its check passes.
+		if dep.Condition == config.ConditionHealthy {
+			if health := depProc.GetHealth(); health != process.HealthHealthy {
+				return false, fmt.Sprintf("dependency %s is running but its health check is %s", dep.Name, health)
+			}
 		}
 	}
 	return true, ""
+}
+
+// dependenciesOf returns what a program depends on, with the condition each
+// dependency has to reach. The graph carries the ordering, the configuration
+// carries the conditions.
+func (s *Server) dependenciesOf(name string) []config.Dependency {
+	s.processMutex.RLock()
+	defer s.processMutex.RUnlock()
+
+	prog := s.config.Programs[name]
+	if prog == nil {
+		return nil
+	}
+	return prog.DependsOn
 }
 
 // programNames returns configured program names ordered by priority, lowest

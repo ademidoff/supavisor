@@ -81,7 +81,7 @@ func TestReconcile_StartsDependentOnceDependencyIsUp(t *testing.T) {
 			Command:     "/bin/sleep 60",
 			Autostart:   true,
 			Autorestart: config.RestartNever,
-			DependsOn:   []string{"slowdep"},
+			DependsOn:   []config.Dependency{{Name: "slowdep"}},
 			StartSecs:   1,
 			MaxRestarts: 3,
 		},
@@ -114,7 +114,7 @@ func TestReconcile_StartsDependentWithoutBeingAskedAgain(t *testing.T) {
 		},
 		"dependent": {
 			Command: "/bin/sleep 60", Autostart: true,
-			Autorestart: config.RestartNever, DependsOn: []string{"dep"},
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
 			StartSecs: 1, MaxRestarts: 3,
 		},
 	})
@@ -137,6 +137,100 @@ func TestReconcile_StartsDependentWithoutBeingAskedAgain(t *testing.T) {
 	// Nobody asks for the dependent: the reconciler notices the dependency is
 	// up and starts it.
 	waitForState(t, sv, "dependent", process.StateRunning, 10*time.Second)
+}
+
+// TestReconcile_WaitsForADependencyToBeHealthy covers the gap RUNNING leaves:
+// the dependency's process is up well before it can serve, and a dependent that
+// starts in that window fails to connect and exits.
+func TestReconcile_WaitsForADependencyToBeHealthy(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "ready")
+
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		// Alive immediately, able to serve two seconds later
+		"db": {
+			Command:     "/bin/sh -c 'sleep 2; touch " + ready + "; sleep 60'",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			StartSecs:   1,
+			MaxRestarts: 1,
+			HealthCheck: &config.HealthCheck{
+				Exec:     "/bin/sh -c 'test -f " + ready + "'",
+				Interval: 100 * time.Millisecond,
+				Timeout:  2 * time.Second,
+				Retries:  1,
+			},
+		},
+		"api": {
+			Command:     "/bin/sleep 60",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			DependsOn:   []config.Dependency{{Name: "db", Condition: config.ConditionHealthy}},
+			StartSecs:   1,
+			MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// db is RUNNING a second before it is ready, which is exactly the window a
+	// dependent must not start in.
+	waitForState(t, sv, "db", process.StateRunning, 10*time.Second)
+	if state := sv.process("api").GetState(); state != process.StateStopped {
+		t.Errorf("Dependent started while its dependency was running but not healthy, state is %s", state)
+	}
+
+	waitForState(t, sv, "api", process.StateRunning, 15*time.Second)
+
+	byName := make(map[string]ProcessStatusInfo)
+	for _, status := range sv.GetStatus() {
+		byName[status.Name] = status
+	}
+	if got := byName["db"].Health; got != process.HealthHealthy {
+		t.Errorf("Expected db to report %s, got %s", process.HealthHealthy, got)
+	}
+	if got := byName["api"].Health; got != process.HealthNone {
+		t.Errorf("A program without a health check should report %s, got %s", process.HealthNone, got)
+	}
+}
+
+// TestReconcile_StartedConditionIgnoresHealth keeps the existing meaning of
+// depends_on: a dependency that declares a health check does not start gating
+// dependents that only asked for it to be running.
+func TestReconcile_StartedConditionIgnoresHealth(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"db": {
+			Command:     "/bin/sleep 60",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			StartSecs:   1,
+			MaxRestarts: 1,
+			HealthCheck: &config.HealthCheck{
+				Exec:     "/bin/sh -c 'exit 1'",
+				Interval: 100 * time.Millisecond,
+				Timeout:  2 * time.Second,
+				Retries:  1,
+			},
+		},
+		"api": {
+			Command:     "/bin/sleep 60",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			DependsOn:   []config.Dependency{{Name: "db"}},
+			StartSecs:   1,
+			MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// db never passes its check, and api must come up regardless.
+	waitForState(t, sv, "api", process.StateRunning, 15*time.Second)
 }
 
 // TestReconcile_ListsEveryConfiguredProgram covers programs that have never
@@ -274,11 +368,11 @@ func TestReconcile_ReportsTheRootCauseOfABlockedStart(t *testing.T) {
 			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
 		},
 		"api": {
-			Command: "/bin/sleep 60", Autostart: true, DependsOn: []string{"db"},
+			Command: "/bin/sleep 60", Autostart: true, DependsOn: []config.Dependency{{Name: "db"}},
 			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
 		},
 		"worker": {
-			Command: "/bin/sleep 60", Autostart: true, DependsOn: []string{"api"},
+			Command: "/bin/sleep 60", Autostart: true, DependsOn: []config.Dependency{{Name: "api"}},
 			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
 		},
 	})
@@ -355,7 +449,7 @@ func TestStop_WorksInwardsFromDependents(t *testing.T) {
 		return "/bin/sh -c 'trap \"echo " + name + " >> " + orderFile + "; exit 0\" TERM; while true; do sleep 0.1; done'"
 	}
 
-	recorder := func(name string, dependsOn []string) *config.ProgramConfig {
+	recorder := func(name string, dependsOn []config.Dependency) *config.ProgramConfig {
 		return &config.ProgramConfig{
 			Command: recordOnTerm(name), Autostart: true, Autorestart: config.RestartNever,
 			DependsOn: dependsOn, StartSecs: 1, StopWaitSecs: 5,
@@ -364,8 +458,8 @@ func TestStop_WorksInwardsFromDependents(t *testing.T) {
 	}
 	sv := newTestServer(t, map[string]*config.ProgramConfig{
 		"db":     recorder("db", nil),
-		"api":    recorder("api", []string{"db"}),
-		"worker": recorder("worker", []string{"api"}),
+		"api":    recorder("api", []config.Dependency{{Name: "db"}}),
+		"worker": recorder("worker", []config.Dependency{{Name: "api"}}),
 	})
 
 	if err := sv.Start(); err != nil {

@@ -28,3 +28,48 @@ programs:
     autorestart: always
     stdout_logfile: /tmp/process3.log
     stderr_logfile: /tmp/process3.log
+
+  # Stands in for a database: its process is up at once, but it cannot serve
+  # until it has finished bootstrapping ten seconds later. The marker file is
+  # what a real one would answer pg_isready with.
+  db:
+    command: /bin/sh -c 'rm -f /tmp/db.ready; sleep 10; touch /tmp/db.ready; sleep 1d'
+    autostart: true
+    autorestart: always
+    health_check:
+      exec: /bin/sh -c 'test -f /tmp/db.ready'
+      # Or, for a real database:
+      #   exec: pg_isready -q -h 127.0.0.1
+      #   tcp: 127.0.0.1:5432
+      #   http: http://127.0.0.1:8080/readyz
+      interval: 1s
+      timeout: 2s
+      retries: 3
+      # Covers the bootstrap, so the wait reads as STARTING rather than
+      # UNHEALTHY while the database is still coming up
+      start_period: 15s
+    stdout_logfile: /tmp/db.log
+    stderr_logfile: /tmp/db.log
+
+  # Waits for the check to pass, not merely for the process. `sctl status` shows
+  # it STOPPED while db is RUNNING but STARTING, then RUNNING once db is HEALTHY.
+  api:
+    command: /bin/sleep 1d
+    autostart: true
+    autorestart: never
+    depends_on:
+      db:
+        condition: healthy
+    stdout_logfile: /tmp/api.log
+    stderr_logfile: /tmp/api.log
+
+  # The list form is unchanged: this one only needs the process to be up, so it
+  # starts about ten seconds before api does.
+  db-logs:
+    command: /bin/sleep 1d
+    autostart: true
+    autorestart: never
+    depends_on:
+      - db
+    stdout_logfile: /tmp/db-logs.log
+    stderr_logfile: /tmp/db-logs.log

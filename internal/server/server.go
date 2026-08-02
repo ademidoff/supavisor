@@ -34,6 +34,7 @@ const (
 type ProcessStatusInfo struct {
 	Name         string
 	State        process.State
+	Health       process.Health
 	Uptime       string
 	PID          int
 	ExitCode     int
@@ -309,6 +310,7 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 		statuses = append(statuses, ProcessStatusInfo{
 			Name:         name,
 			State:        state,
+			Health:       proc.GetHealth(),
 			PID:          pid,
 			ExitCode:     exitCode,
 			RestartCount: restartCount,
@@ -333,6 +335,15 @@ func (s *Server) onProcessStateChange(name string, prevState, newState process.S
 
 	// A dependency reaching RUNNING is what unblocks everything behind it, so
 	// reconcile now rather than waiting up to a tick for it.
+	s.requestReconcile()
+}
+
+// onProcessHealthChange is called when a program's health check result changes
+func (s *Server) onProcessHealthChange(name string, prevHealth, health process.Health) {
+	s.logger.Info("Process health changed", "process", name, "prev_health", prevHealth, "new_health", health)
+
+	// A dependency becoming healthy unblocks whatever was waiting for it, in
+	// the same way reaching RUNNING does.
 	s.requestReconcile()
 }
 

@@ -256,6 +256,7 @@ func (s *IPCServer) handleStatus() *api.Response {
 		processStatuses = append(processStatuses, api.ProcessStatus{
 			Name:         status.Name,
 			State:        string(status.State),
+			Health:       string(status.Health),
 			PID:          status.PID,
 			ExitCode:     status.ExitCode,
 			RestartCount: status.RestartCount,

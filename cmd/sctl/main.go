@@ -86,8 +86,8 @@ func printStatus(resp api.Response) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, tabPadding, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tPID\tEXIT_CODE\tRESTARTS\tUPTIME")
-	fmt.Fprintln(w, "----\t-----\t---\t---------\t--------\t------")
+	fmt.Fprintln(w, "NAME\tSTATE\tHEALTH\tPID\tEXIT_CODE\tRESTARTS\tUPTIME")
+	fmt.Fprintln(w, "----\t-----\t------\t---\t---------\t--------\t------")
 
 	for _, p := range processesData {
 		procMap, ok := p.(map[string]any)
@@ -107,10 +107,20 @@ func printStatus(resp api.Response) {
 			pidStr = fmt.Sprintf("%d", pid)
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", name, state, pidStr, exitCode, restarts, uptime)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
+			name, state, healthColumn(getString(procMap, "health")), pidStr, exitCode, restarts, uptime)
 	}
 
 	_ = w.Flush()
+}
+
+// healthColumn renders the health of a program. Programs without a health
+// check, and programs that are not running, have nothing to report.
+func healthColumn(health string) string {
+	if health == "" || health == "NONE" {
+		return "-"
+	}
+	return health
 }
 
 func getString(m map[string]any, key string) string {

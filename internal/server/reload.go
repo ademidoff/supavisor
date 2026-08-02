@@ -173,7 +173,7 @@ func changedDaemonSetting(old, updated *config.SupavisorConfig) string {
 func buildDependencyGraph(cfg *config.Config) *dependency.Graph {
 	graph := dependency.NewGraph()
 	for name, progConfig := range cfg.Programs {
-		graph.AddNode(name, progConfig.DependsOn)
+		graph.AddNode(name, progConfig.DependencyNames())
 	}
 	return graph
 }
@@ -182,5 +182,6 @@ func buildDependencyGraph(cfg *config.Config) *dependency.Graph {
 func (s *Server) newProcess(cfg *config.ProgramConfig) *process.Process {
 	proc := process.NewProcess(cfg, s.processLogger)
 	proc.SetStateChangeCallback(s.onProcessStateChange)
+	proc.SetHealthChangeCallback(s.onProcessHealthChange)
 	return proc
 }

@@ -29,6 +29,7 @@ type Response struct {
 type ProcessStatus struct {
 	Name         string `json:"name"`
 	State        string `json:"state"`
+	Health       string `json:"health"`
 	Uptime       string `json:"uptime"`
 	PID          int    `json:"pid"`
 	ExitCode     int    `json:"exit_code"`
