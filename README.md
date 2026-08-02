@@ -631,13 +631,22 @@ more unit tests.
 ### Coverage reporting
 
 The `Coverage` workflow (`.github/workflows/coverage.yml`) runs on every push to
-`main` and on every pull request. On `main` it publishes two files to GitHub
-Pages:
+`main` and on every pull request. On `main` it publishes three files to
+[GitHub Pages](https://ademidoff.github.io/supavisor/), built by
+`.github/scripts/coverage-site.sh`:
 
-- `index.html`: the annotated HTML coverage report
+- `index.html`: the total, a per-file table sorted least-covered first, and a link to the annotated report
+- `report.html`: `go tool cover -html` output, annotated line by line
 - `coverage.json`: a [shields.io endpoint](https://shields.io/badges/endpoint-badge) descriptor backing the badge at the top of this README
 
-Pull requests run the tests and build the report, but do not deploy.
+Pull requests run the tests and build the site, but do not deploy.
+
+The per-file numbers are computed from `coverage.out` rather than read from
+`go tool cover -func`, which reports per function. Under `-coverpkg=./...` every
+test binary emits a record for every block it can see, so the same block appears
+once per binary; the script deduplicates on the block key and sums the execution
+counts before deciding whether a block was covered. The resulting total is
+checked against `go tool cover -func` on each change.
 
 Enabling this on a fork requires setting **Settings > Pages > Source** to
 **GitHub Actions**.

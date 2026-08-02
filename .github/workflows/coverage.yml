@@ -29,27 +29,7 @@ jobs:
         run: make cover GOTESTFLAGS=-count=1
 
       - name: Build coverage site
-        run: |
-          mkdir -p site
-          go tool cover -html=coverage.out -o site/index.html
-
-          pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
-          int=${pct%%.*}
-          if [ "$int" -ge 80 ]; then
-            color=brightgreen
-          elif [ "$int" -ge 70 ]; then
-            color=green
-          elif [ "$int" -ge 50 ]; then
-            color=yellow
-          else
-            color=red
-          fi
-
-          jq -n --arg m "$pct" --arg c "$color" \
-            '{schemaVersion: 1, label: "coverage", message: $m, color: $c, cacheSeconds: 300}' \
-            > site/coverage.json
-
-          echo "Total coverage: $pct"
+        run: ./.github/scripts/coverage-site.sh coverage.out site
 
       - name: Upload Pages artifact
         if: github.event_name == 'push'
