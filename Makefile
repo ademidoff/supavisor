@@ -1,7 +1,10 @@
-.PHONY: build test clean run lint lint-install format
+.PHONY: build test cover cover-html clean run lint lint-install format
 
 # Version of golangci-lint to use
 GOLANGCI_LINT_VERSION := v2.12.2
+
+# Coverage profile produced by the cover target
+COVERAGE_FILE := coverage.out
 
 # Path to golangci-lint binary
 GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
@@ -21,6 +24,17 @@ build:
 test:
 	@echo "Running tests..."
 	@go test -race -v ./...
+
+# Run tests with the race detector and coverage, then print the total
+# -coverpkg=./... credits code exercised across package boundaries
+cover:
+	@echo "Running tests with coverage..."
+	@go test -race -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_FILE) ./...
+	@go tool cover -func=$(COVERAGE_FILE) | tail -1
+
+# Open the annotated HTML coverage report in a browser
+cover-html: cover
+	@go tool cover -html=$(COVERAGE_FILE)
 
 # Install golangci-lint if not present or version doesn't match
 lint-install:
@@ -48,6 +62,7 @@ format:
 clean:
 	@echo "Cleaning..."
 	@rm -rf bin/
+	@rm -f $(COVERAGE_FILE)
 	@go clean
 	@echo "Clean complete!"
 

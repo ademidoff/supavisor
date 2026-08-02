@@ -1,5 +1,7 @@
 # Supavisor
 
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fademidoff.github.io%2Fsupavisor%2Fcoverage.json)](https://ademidoff.github.io/supavisor/)
+
 A process supervisor daemon written in Go, that is largely inspired by supervisord. It efficiently manages child processes with dependency support, config-based lifecycle management, and log rotation.
 
 ## Features
@@ -591,6 +593,45 @@ programs:
 - `internal/logrotate`: Log rotation and retention
 - `internal/server`: Core supavisor daemon
 - `internal/api`: API types for IPC communication
+
+## Development
+
+### Testing
+
+```bash
+# Run the full suite with the race detector, verbose output
+make test
+
+# Same, plus coverage: prints the total and writes coverage.out
+make cover
+
+# Same, then open the annotated per-line report in a browser
+make cover-html
+```
+
+`make cover` passes `-coverpkg=./...` so that code exercised across package
+boundaries is credited to the package that defines it. Without it, helpers in
+`internal/config` and `internal/process` that are driven by the `internal/server`
+tests are reported as uncovered.
+
+The `cmd/supavisor` and `cmd/sctl` packages show low coverage because they are
+binary entry points. Covering them meaningfully requires building an
+instrumented binary with `go build -cover` and setting `GOCOVERDIR`, rather than
+more unit tests.
+
+### Coverage reporting
+
+The `Coverage` workflow (`.github/workflows/coverage.yml`) runs on every push to
+`main` and on every pull request. On `main` it publishes two files to GitHub
+Pages:
+
+- `index.html`: the annotated HTML coverage report
+- `coverage.json`: a [shields.io endpoint](https://shields.io/badges/endpoint-badge) descriptor backing the badge at the top of this README
+
+Pull requests run the tests and build the report, but do not deploy.
+
+Enabling this on a fork requires setting **Settings > Pages > Source** to
+**GitHub Actions**.
 
 ## License
 

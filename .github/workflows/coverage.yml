@@ -1,0 +1,72 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests with coverage
+        run: make cover
+
+      - name: Build coverage site
+        run: |
+          mkdir -p site
+          go tool cover -html=coverage.out -o site/index.html
+
+          pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
+          int=${pct%%.*}
+          if [ "$int" -ge 80 ]; then
+            color=brightgreen
+          elif [ "$int" -ge 70 ]; then
+            color=green
+          elif [ "$int" -ge 50 ]; then
+            color=yellow
+          else
+            color=red
+          fi
+
+          jq -n --arg m "$pct" --arg c "$color" \
+            '{schemaVersion: 1, label: "coverage", message: $m, color: $c, cacheSeconds: 300}' \
+            > site/coverage.json
+
+          echo "Total coverage: $pct"
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: coverage
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
