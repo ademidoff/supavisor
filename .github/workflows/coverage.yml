@@ -29,8 +29,6 @@ jobs:
         run: make cover GOTESTFLAGS=-count=1
 
       - name: Build coverage site
-        env:
-          COMMIT: ${{ github.sha }}
         run: ./.github/scripts/coverage-site.sh coverage.out site
 
       - name: Upload Pages artifact

@@ -9,7 +9,7 @@
 #   report.html    go tool cover -html output
 #   coverage.json  shields.io endpoint descriptor for the README badge
 #
-# COMMIT and BUILT_AT may be set in the environment; both fall back to git.
+# BUILT_AT may be set in the environment; it falls back to the current time.
 
 set -euo pipefail
 
@@ -17,7 +17,13 @@ profile=${1:?usage: coverage-site.sh <profile> <output-dir>}
 outdir=${2:?usage: coverage-site.sh <profile> <output-dir>}
 
 module=$(awk '$1 == "module" { print $2; exit }' go.mod)
-commit=${COMMIT:-$(git rev-parse HEAD)}
+
+# GITHUB_REPOSITORY and GITHUB_SHA are set for every GitHub Actions run. The
+# fallbacks cover local runs: a GitHub-hosted Go module path is github.com
+# followed by the owner and repository.
+repository=${GITHUB_REPOSITORY:-${module#github.com/}}
+commit=${GITHUB_SHA:-$(git rev-parse HEAD)}
+name=${repository#*/}
 built_at=${BUILT_AT:-$(date -u +"%Y-%m-%d %H:%M UTC")}
 
 mkdir -p "$outdir"
@@ -106,7 +112,7 @@ cat >"$outdir/index.html" <<EOF
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Supavisor test coverage</title>
+<title>${name} test coverage</title>
 <style>
 :root {
 	color-scheme: light;
@@ -315,7 +321,7 @@ footer a { color: inherit; }
 </head>
 <body>
 <main>
-	<h1>Supavisor</h1>
+	<h1>${name}</h1>
 	<p class="subtitle">Test coverage, measured with the race detector on every push to main.</p>
 
 	<div class="card">
@@ -346,7 +352,7 @@ ${rows}
 </main>
 <footer>
 	Generated ${built_at} from
-	<a href="https://github.com/ademidoff/supavisor/commit/${commit}">${commit:0:7}</a>.
+	<a href="https://github.com/${repository}/commit/${commit}">${commit:0:7}</a>.
 	Packages with no statements executed by any test do not appear.
 </footer>
 </body>
