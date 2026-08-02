@@ -1,0 +1,75 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # -count=1 bypasses Go's test result cache. Without it a run that
+      # changes no Go source replays the previous verdict, so the race
+      # detector never gets a fresh attempt at the timing-dependent tests.
+      - name: Run tests with coverage
+        run: make cover GOTESTFLAGS=-count=1
+
+      - name: Build coverage site
+        run: |
+          mkdir -p site
+          go tool cover -html=coverage.out -o site/index.html
+
+          pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
+          int=${pct%%.*}
+          if [ "$int" -ge 80 ]; then
+            color=brightgreen
+          elif [ "$int" -ge 70 ]; then
+            color=green
+          elif [ "$int" -ge 50 ]; then
+            color=yellow
+          else
+            color=red
+          fi
+
+          jq -n --arg m "$pct" --arg c "$color" \
+            '{schemaVersion: 1, label: "coverage", message: $m, color: $c, cacheSeconds: 300}' \
+            > site/coverage.json
+
+          echo "Total coverage: $pct"
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: coverage
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
