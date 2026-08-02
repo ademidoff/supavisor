@@ -6,6 +6,10 @@ GOLANGCI_LINT_VERSION := v2.12.2
 # Coverage profile produced by the cover target
 COVERAGE_FILE := coverage.out
 
+# Extra flags for the test targets
+# CI passes -count=1 to bypass Go's test result cache
+GOTESTFLAGS ?=
+
 # Path to golangci-lint binary
 GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
 
@@ -29,7 +33,7 @@ test:
 # -coverpkg=./... credits code exercised across package boundaries
 cover:
 	@echo "Running tests with coverage..."
-	@go test -race -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_FILE) ./...
+	@go test -race -covermode=atomic $(GOTESTFLAGS) -coverpkg=./... -coverprofile=$(COVERAGE_FILE) ./...
 	@go tool cover -func=$(COVERAGE_FILE) | tail -1
 
 # Open the annotated HTML coverage report in a browser

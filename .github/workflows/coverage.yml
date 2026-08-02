@@ -22,8 +22,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # -count=1 bypasses Go's test result cache. Without it a run that
+      # changes no Go source replays the previous verdict, so the race
+      # detector never gets a fresh attempt at the timing-dependent tests.
       - name: Run tests with coverage
-        run: make cover
+        run: make cover GOTESTFLAGS=-count=1
 
       - name: Build coverage site
         run: |

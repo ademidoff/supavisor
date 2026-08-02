@@ -607,7 +607,16 @@ make cover
 
 # Same, then open the annotated per-line report in a browser
 make cover-html
+
+# Bypass Go's test result cache and genuinely re-run everything
+make cover GOTESTFLAGS=-count=1
 ```
+
+Go caches test results, so a repeated `make cover` over unchanged source
+replays the previous verdict in about a second. That is convenient locally but
+wrong for CI: several tests here are timing-dependent, and a replayed result
+means the race detector never gets a fresh attempt. CI therefore passes
+`GOTESTFLAGS=-count=1`.
 
 `make cover` passes `-coverpkg=./...` so that code exercised across package
 boundaries is credited to the package that defines it. Without it, helpers in
