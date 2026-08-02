@@ -32,9 +32,15 @@ const (
 
 // ProcessStatusInfo contains status information about a process
 type ProcessStatusInfo struct {
-	Name         string
-	State        process.State
-	Uptime       string
+	Name    string
+	State   process.State
+	Desired DesiredState
+	Health  process.Health
+	Uptime  string
+
+	// Reason is why a program is not running, and is empty whenever there is
+	// nothing to explain.
+	Reason       string
 	PID          int
 	ExitCode     int
 	RestartCount int
@@ -48,6 +54,7 @@ type Server struct {
 	processes       map[string]*process.Process
 	desired         map[string]DesiredState
 	inflight        map[string]bool
+	blockedReason   map[string]string
 	dependencyGraph *dependency.Graph
 	ipcServer       *IPCServer
 	pidLock         *pidLock
@@ -87,6 +94,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		processes:       make(map[string]*process.Process, len(cfg.Programs)),
 		desired:         make(map[string]DesiredState, len(cfg.Programs)),
 		inflight:        make(map[string]bool),
+		blockedReason:   make(map[string]string),
 		dependencyGraph: graph,
 		stopChan:        make(chan struct{}),
 		stateDirty:      make(chan struct{}, 1),
@@ -309,6 +317,9 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 		statuses = append(statuses, ProcessStatusInfo{
 			Name:         name,
 			State:        state,
+			Desired:      s.desired[name],
+			Health:       proc.GetHealth(),
+			Reason:       s.notRunningReason(name, state, restartCount, exitCode),
 			PID:          pid,
 			ExitCode:     exitCode,
 			RestartCount: restartCount,
@@ -324,6 +335,65 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 	return statuses
 }
 
+// notRunningReason explains why a program is not running, or returns an empty
+// string when there is nothing to explain.
+//
+// A program can be held back by a dependency, it can have given up, or it can
+// have exited under a policy that leaves it alone. All three leave it not
+// running while it may still be wanted, and the state alone does not say which.
+// Must be called with processMutex held.
+func (s *Server) notRunningReason(name string, state process.State, restartCount, exitCode int) string {
+	if reason := s.blockedReason[name]; reason != "" {
+		return reason
+	}
+
+	if state == process.StateFatal {
+		return fmt.Sprintf("gave up after %s", restartPhrase(restartCount))
+	}
+	if state == process.StateExited {
+		return exitedReason(s.autorestartPolicy(name), exitCode)
+	}
+	return ""
+}
+
+// reasonCleanExit is the whole explanation for a zero exit under the default
+// policy: nothing went wrong, so there is nothing to restart.
+const reasonCleanExit = "exited cleanly; autorestart is unexpected"
+
+// exitedReason explains why a program that exited on its own was left that way.
+// It names the policy that decided it, which is the setting to change.
+func exitedReason(policy config.RestartPolicy, exitCode int) string {
+	switch {
+	case policy == config.RestartNever:
+		return fmt.Sprintf("exited with status %d; autorestart is never", exitCode)
+	case policy == config.RestartUnexpected && exitCode == 0:
+		return reasonCleanExit
+	}
+
+	// Every other combination would have been restarted, so getting here means
+	// the restart was abandoned rather than declined.
+	return fmt.Sprintf("exited with status %d", exitCode)
+}
+
+// autorestartPolicy returns the restart policy of a program. Must be called
+// with processMutex held.
+func (s *Server) autorestartPolicy(name string) config.RestartPolicy {
+	prog := s.config.Programs[name]
+	if prog == nil {
+		return ""
+	}
+	return prog.Autorestart
+}
+
+// restartPhrase renders a restart count as something that reads in a sentence
+func restartPhrase(restarts int) string {
+	unit := "restarts"
+	if restarts == 1 {
+		unit = "restart"
+	}
+	return fmt.Sprintf("%d %s", restarts, unit)
+}
+
 // onProcessStateChange is called when a process state changes
 func (s *Server) onProcessStateChange(name string, prevState, newState process.State) {
 	if prevState != newState {
@@ -333,6 +403,15 @@ func (s *Server) onProcessStateChange(name string, prevState, newState process.S
 
 	// A dependency reaching RUNNING is what unblocks everything behind it, so
 	// reconcile now rather than waiting up to a tick for it.
+	s.requestReconcile()
+}
+
+// onProcessHealthChange is called when a program's health check result changes
+func (s *Server) onProcessHealthChange(name string, prevHealth, health process.Health) {
+	s.logger.Info("Process health changed", "process", name, "prev_health", prevHealth, "new_health", health)
+
+	// A dependency becoming healthy unblocks whatever was waiting for it, in
+	// the same way reaching RUNNING does.
 	s.requestReconcile()
 }
 

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -17,6 +19,12 @@ import (
 // newTestServer builds a server over a throwaway socket and pid file. Paths go
 // under /tmp because a unix socket path is limited to ~104 bytes.
 func newTestServer(t *testing.T, programs map[string]*config.ProgramConfig) *Server {
+	t.Helper()
+	return newTestServerWithLogger(t, programs, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// newTestServerWithLogger is newTestServer for a test that reads the log
+func newTestServerWithLogger(t *testing.T, programs map[string]*config.ProgramConfig, logger *slog.Logger) *Server {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("/tmp", "sv-rec")
@@ -43,7 +51,7 @@ func newTestServer(t *testing.T, programs map[string]*config.ProgramConfig) *Ser
 		Programs: programs,
 	}
 
-	sv, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	sv, err := New(cfg, logger)
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -81,7 +89,7 @@ func TestReconcile_StartsDependentOnceDependencyIsUp(t *testing.T) {
 			Command:     "/bin/sleep 60",
 			Autostart:   true,
 			Autorestart: config.RestartNever,
-			DependsOn:   []string{"slowdep"},
+			DependsOn:   []config.Dependency{{Name: "slowdep"}},
 			StartSecs:   1,
 			MaxRestarts: 3,
 		},
@@ -114,7 +122,7 @@ func TestReconcile_StartsDependentWithoutBeingAskedAgain(t *testing.T) {
 		},
 		"dependent": {
 			Command: "/bin/sleep 60", Autostart: true,
-			Autorestart: config.RestartNever, DependsOn: []string{"dep"},
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
 			StartSecs: 1, MaxRestarts: 3,
 		},
 	})
@@ -137,6 +145,401 @@ func TestReconcile_StartsDependentWithoutBeingAskedAgain(t *testing.T) {
 	// Nobody asks for the dependent: the reconciler notices the dependency is
 	// up and starts it.
 	waitForState(t, sv, "dependent", process.StateRunning, 10*time.Second)
+}
+
+// TestReconcile_WaitsForADependencyToBeHealthy covers the gap RUNNING leaves:
+// the dependency's process is up well before it can serve, and a dependent that
+// starts in that window fails to connect and exits.
+func TestReconcile_WaitsForADependencyToBeHealthy(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "ready")
+
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		// Alive immediately, able to serve two seconds later
+		"db": {
+			Command:     "/bin/sh -c 'sleep 2; touch " + ready + "; sleep 60'",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			StartSecs:   1,
+			MaxRestarts: 1,
+			HealthCheck: &config.HealthCheck{
+				Exec:     "/bin/sh -c 'test -f " + ready + "'",
+				Interval: 100 * time.Millisecond,
+				Timeout:  2 * time.Second,
+				Retries:  1,
+			},
+		},
+		"api": {
+			Command:     "/bin/sleep 60",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			DependsOn:   []config.Dependency{{Name: "db", Condition: config.ConditionHealthy}},
+			StartSecs:   1,
+			MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// db is RUNNING a second before it is ready, which is exactly the window a
+	// dependent must not start in.
+	waitForState(t, sv, "db", process.StateRunning, 10*time.Second)
+	if state := sv.process("api").GetState(); state != process.StateStopped {
+		t.Errorf("Dependent started while its dependency was running but not healthy, state is %s", state)
+	}
+
+	waitForState(t, sv, "api", process.StateRunning, 15*time.Second)
+
+	byName := make(map[string]ProcessStatusInfo)
+	for _, status := range sv.GetStatus() {
+		byName[status.Name] = status
+	}
+	if got := byName["db"].Health; got != process.HealthHealthy {
+		t.Errorf("Expected db to report %s, got %s", process.HealthHealthy, got)
+	}
+	if got := byName["api"].Health; got != process.HealthNone {
+		t.Errorf("A program without a health check should report %s, got %s", process.HealthNone, got)
+	}
+}
+
+// TestReconcile_StartedConditionIgnoresHealth keeps the existing meaning of
+// depends_on: a dependency that declares a health check does not start gating
+// dependents that only asked for it to be running.
+func TestReconcile_StartedConditionIgnoresHealth(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"db": {
+			Command:     "/bin/sleep 60",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			StartSecs:   1,
+			MaxRestarts: 1,
+			HealthCheck: &config.HealthCheck{
+				Exec:     "/bin/sh -c 'exit 1'",
+				Interval: 100 * time.Millisecond,
+				Timeout:  2 * time.Second,
+				Retries:  1,
+			},
+		},
+		"api": {
+			Command:     "/bin/sleep 60",
+			Autostart:   true,
+			Autorestart: config.RestartNever,
+			DependsOn:   []config.Dependency{{Name: "db"}},
+			StartSecs:   1,
+			MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// db never passes its check, and api must come up regardless.
+	waitForState(t, sv, "api", process.StateRunning, 15*time.Second)
+}
+
+// TestReconcile_ReportsABlockedStartOncePerReason covers the log of a program
+// that is waiting: the reconciler looks every second, so repeating the same
+// reason would bury everything else, and saying nothing left a program that
+// never starts with no explanation at all.
+func TestReconcile_ReportsABlockedStartOncePerReason(t *testing.T) {
+	var log lockedBuffer
+	logger := slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	sv := newTestServerWithLogger(t, map[string]*config.ProgramConfig{
+		"dep": {
+			Command: "/bin/sleep 60", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"dependent": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
+			StartSecs: 1, MaxRestarts: 1,
+		},
+	}, logger)
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// Several reconcile passes over a situation that has not changed
+	time.Sleep(3 * time.Second)
+
+	reasons := blockedReasons(log.String())
+	if len(reasons) != 1 {
+		t.Fatalf("Expected one report while nothing changed, got %d: %v", len(reasons), reasons)
+	}
+	if !strings.Contains(reasons[0], "dep") {
+		t.Errorf("Expected the report to name the dependency, got %s", reasons[0])
+	}
+
+	// Bringing the dependency up moves the dependent through further reasons on
+	// its way to starting; none of them may repeat.
+	if err := sv.StartProcess("dep"); err != nil {
+		t.Fatalf("StartProcess(dep) failed: %v", err)
+	}
+	waitForState(t, sv, "dependent", process.StateRunning, 10*time.Second)
+
+	reasons = blockedReasons(log.String())
+	seen := make(map[string]bool, len(reasons))
+	for _, reason := range reasons {
+		if seen[reason] {
+			t.Errorf("Reason reported more than once: %s", reason)
+		}
+		seen[reason] = true
+	}
+}
+
+// TestStatus_ExplainsAProgramThatIsWantedButNotRunning covers the pair of
+// fields that tell a stopped program that nobody asked for apart from one that
+// cannot start: a bare STOPPED says nothing about which it is.
+func TestStatus_ExplainsAProgramThatIsWantedButNotRunning(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"dep": {
+			Command: "/bin/sleep 60", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"dependent": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
+			StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	time.Sleep(1500 * time.Millisecond)
+
+	byName := statusByName(sv)
+	blocked, idle := byName["dependent"], byName["dep"]
+
+	// Both are STOPPED, and only the desired state separates them
+	if blocked.State != process.StateStopped || idle.State != process.StateStopped {
+		t.Fatalf("Expected both programs STOPPED, got %s and %s", blocked.State, idle.State)
+	}
+	if blocked.Desired != DesiredRunning {
+		t.Errorf("A program held back by a dependency should still be wanted, got %s", blocked.Desired)
+	}
+	if idle.Desired != DesiredStopped {
+		t.Errorf("A program with autostart false should not be wanted, got %s", idle.Desired)
+	}
+	if !strings.Contains(blocked.Reason, "dep") {
+		t.Errorf("Expected the status to name what it is waiting for, got %s", blocked.Reason)
+	}
+	if idle.Reason != "" {
+		t.Errorf("A program nobody asked for is not waiting for anything, got %s", idle.Reason)
+	}
+
+	// Once it is running there is nothing left to explain
+	if err := sv.StartProcess("dep"); err != nil {
+		t.Fatalf("StartProcess(dep) failed: %v", err)
+	}
+	waitForState(t, sv, "dependent", process.StateRunning, 10*time.Second)
+
+	if reason := statusByName(sv)["dependent"].Reason; reason != "" {
+		t.Errorf("A running program should not report a reason, got %s", reason)
+	}
+}
+
+// TestStatus_ForgetsTheReasonWhenAProgramIsNoLongerWanted keeps a stale
+// explanation from outliving the request it belonged to
+func TestStatus_ForgetsTheReasonWhenAProgramIsNoLongerWanted(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"dep": {
+			Command: "/bin/sleep 60", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"dependent": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
+			StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	time.Sleep(1500 * time.Millisecond)
+	if statusByName(sv)["dependent"].Reason == "" {
+		t.Fatal("Expected the blocked program to report a reason to begin with")
+	}
+
+	if err := sv.StopProcess("dependent"); err != nil {
+		t.Fatalf("StopProcess failed: %v", err)
+	}
+
+	status := statusByName(sv)["dependent"]
+	if status.Desired != DesiredStopped {
+		t.Errorf("Expected the program to be unwanted after a stop, got %s", status.Desired)
+	}
+	if status.Reason != "" {
+		t.Errorf("A program nobody is asking for is not waiting, got %s", status.Reason)
+	}
+}
+
+// TestStatus_ExplainsAProgramThatGaveUp covers the other way a program can be
+// wanted and not running. Nothing is holding it back, so there is no blocked
+// reason to report, and FATAL on its own does not say how it got there.
+func TestStatus_ExplainsAProgramThatGaveUp(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"doomed": {
+			Command: "/bin/sh -c 'exit 1'", Autostart: true,
+			Autorestart: config.RestartAlways, StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "doomed", process.StateFatal, 15*time.Second)
+
+	status := statusByName(sv)["doomed"]
+	if status.Desired != DesiredRunning {
+		t.Errorf("A program that gave up is still wanted, got %s", status.Desired)
+	}
+	if status.Reason != "gave up after 1 restart" {
+		t.Errorf("Expected the reason to say how it gave up, got %s", status.Reason)
+	}
+}
+
+// TestStatus_ExplainsAProgramThatWasLeftExited covers the third way a program
+// can be wanted and not running: it exited on its own and the restart policy
+// declined to bring it back, which EXITED alone does not say.
+func TestStatus_ExplainsAProgramThatWasLeftExited(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"oneshot": {
+			Command: "/bin/sh -c 'exit 3'", Autostart: true,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
+		},
+		"cleanexit": {
+			Command: "/bin/sh -c 'exit 0'", Autostart: true,
+			Autorestart: config.RestartUnexpected, StartSecs: 1, MaxRestarts: 3,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "oneshot", process.StateExited, 10*time.Second)
+	waitForState(t, sv, "cleanexit", process.StateExited, 10*time.Second)
+
+	byName := statusByName(sv)
+	if got, want := byName["oneshot"].Reason, exitedReason(config.RestartNever, 3); got != want {
+		t.Errorf("Expected the reason to name the policy that left it, got %s, want %s", got, want)
+	}
+	if got, want := byName["cleanexit"].Reason, exitedReason(config.RestartUnexpected, 0); got != want {
+		t.Errorf("Expected a clean exit to be reported as expected, got %s, want %s", got, want)
+	}
+}
+
+func TestExitedReason(t *testing.T) {
+	tests := []struct {
+		name     string
+		policy   config.RestartPolicy
+		want     string
+		exitCode int
+	}{
+		{
+			name: "never restarts", policy: config.RestartNever, exitCode: 1,
+			want: "exited with status 1; autorestart is never",
+		},
+		{
+			name: "never restarts after a clean exit", policy: config.RestartNever, exitCode: 0,
+			want: "exited with status 0; autorestart is never",
+		},
+		{
+			name: "a clean exit is expected", policy: config.RestartUnexpected, exitCode: 0,
+			want: "exited cleanly; autorestart is unexpected",
+		},
+		// Would have been restarted, so the restart was abandoned rather than
+		// declined and there is no policy to point at.
+		{
+			name: "restart abandoned", policy: config.RestartAlways, exitCode: 2,
+			want: "exited with status 2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitedReason(tt.policy, tt.exitCode); got != tt.want {
+				t.Errorf("exitedReason(%s, %d) = %s, want %s", tt.policy, tt.exitCode, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRestartPhrase(t *testing.T) {
+	tests := []struct {
+		want     string
+		restarts int
+	}{
+		{restarts: 0, want: "0 restarts"},
+		{restarts: 1, want: "1 restart"},
+		{restarts: 3, want: "3 restarts"},
+	}
+
+	for _, tt := range tests {
+		if got := restartPhrase(tt.restarts); got != tt.want {
+			t.Errorf("restartPhrase(%d) = %s, want %s", tt.restarts, got, tt.want)
+		}
+	}
+}
+
+func statusByName(sv *Server) map[string]ProcessStatusInfo {
+	statuses := sv.GetStatus()
+	byName := make(map[string]ProcessStatusInfo, len(statuses))
+	for _, status := range statuses {
+		byName[status.Name] = status
+	}
+	return byName
+}
+
+// lockedBuffer collects log output written from the reconcile loop while the
+// test reads it
+type lockedBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// blockedReasons returns the reason of every "Not starting yet" line logged
+func blockedReasons(log string) []string {
+	reasons := make([]string, 0)
+
+	for line := range strings.SplitSeq(log, "\n") {
+		if !strings.Contains(line, "Not starting yet") {
+			continue
+		}
+		_, reason, found := strings.Cut(line, "reason=")
+		if found {
+			reasons = append(reasons, reason)
+		}
+	}
+	return reasons
 }
 
 // TestReconcile_ListsEveryConfiguredProgram covers programs that have never
@@ -274,11 +677,11 @@ func TestReconcile_ReportsTheRootCauseOfABlockedStart(t *testing.T) {
 			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
 		},
 		"api": {
-			Command: "/bin/sleep 60", Autostart: true, DependsOn: []string{"db"},
+			Command: "/bin/sleep 60", Autostart: true, DependsOn: []config.Dependency{{Name: "db"}},
 			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
 		},
 		"worker": {
-			Command: "/bin/sleep 60", Autostart: true, DependsOn: []string{"api"},
+			Command: "/bin/sleep 60", Autostart: true, DependsOn: []config.Dependency{{Name: "api"}},
 			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
 		},
 	})
@@ -355,7 +758,7 @@ func TestStop_WorksInwardsFromDependents(t *testing.T) {
 		return "/bin/sh -c 'trap \"echo " + name + " >> " + orderFile + "; exit 0\" TERM; while true; do sleep 0.1; done'"
 	}
 
-	recorder := func(name string, dependsOn []string) *config.ProgramConfig {
+	recorder := func(name string, dependsOn []config.Dependency) *config.ProgramConfig {
 		return &config.ProgramConfig{
 			Command: recordOnTerm(name), Autostart: true, Autorestart: config.RestartNever,
 			DependsOn: dependsOn, StartSecs: 1, StopWaitSecs: 5,
@@ -364,8 +767,8 @@ func TestStop_WorksInwardsFromDependents(t *testing.T) {
 	}
 	sv := newTestServer(t, map[string]*config.ProgramConfig{
 		"db":     recorder("db", nil),
-		"api":    recorder("api", []string{"db"}),
-		"worker": recorder("worker", []string{"api"}),
+		"api":    recorder("api", []config.Dependency{{Name: "db"}}),
+		"worker": recorder("worker", []config.Dependency{{Name: "api"}}),
 	})
 
 	if err := sv.Start(); err != nil {

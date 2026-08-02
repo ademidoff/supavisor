@@ -8,6 +8,8 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 
 - **Process Management**: Start, stop, restart, and monitor child processes
 - **Dependency Management**: Launch processes based on whether other processes are running
+- **Health Checks**: Probe a program to tell whether it is ready to serve, and hold
+  its dependents back until it is
 - **Configuration-Based**: Configure process lifetime and behavior via YAML config files
 - **Log Rotation**: Automatic log file rotation based on file size with configurable retention periods
 - **CLI Tool**: Command-line interface for managing processes
@@ -99,6 +101,9 @@ nohup ./supavisor -c supavisor.yml &
 # Check status
 ./sctl status
 
+# Look at one process, including why it is not running
+./sctl status webapp
+
 # Start a process
 ./sctl start webapp
 
@@ -145,6 +150,7 @@ socket is therefore created `0660`, owned by `socket_group` when one is set.
 
 Commands:
 - `status`: Show status of all processes
+- `status <name>`: Show one process in detail, including why it is not running
 - `start <name>`: Start a specific process
 - `stop <name>`: Stop a specific process
 - `restart <name>`: Restart a specific process
@@ -218,7 +224,11 @@ Each program is defined under `programs` with its name as the key:
   is killed (default: 10)
 - `max_restarts`: Maximum number of *consecutive* restarts before giving up (default: 3).
   See [Restart behavior](#restart-behavior) for how the counter is reset.
-- `depends_on`: List of program names that must be running first
+- `depends_on`: Programs that must come up first, either as a list of names or as a
+  mapping that says what each one has to reach. See
+  [Dependency Management](#dependency-management).
+- `health_check`: How to tell whether this program is ready to serve, rather than
+  merely running. See [Health checks](#health-checks).
 - `stdout_logfile`: Path to stdout log file. If omitted, the process's stdout is
   discarded (connected to `/dev/null`).
 - `stderr_logfile`: Path to stderr log file. If omitted, the process's stderr is
@@ -255,6 +265,52 @@ started; those are reported as `STOPPED`.
 `sctl stop` always ends in `STOPPED`, including for a process that had already
 exited or reached `FATAL` on its own. Stopping a process that is waiting out a
 restart backoff cancels that pending restart.
+
+The `HEALTH` column of `sctl status` reports separately on programs that declare a
+`health_check`; see [Health checks](#health-checks).
+
+### What a program is doing versus what it was asked to do
+
+A state on its own does not say whether anything is wrong: a `STOPPED` program may
+be one nobody has asked for, or one that wants to run and cannot. The `DESIRED`
+column separates them, and `sctl status <name>` says why:
+
+```
+$ sctl status
+NAME     STATE     DESIRED   HEALTH      PID     EXIT_CODE   RESTARTS   UPTIME
+----     -----     -------   ------      ---     ---------   --------   ------
+api      STOPPED   RUNNING   -           N/A     0           0          N/A
+db       RUNNING   RUNNING   UNHEALTHY   89734   0           0          8s
+doomed   FATAL     RUNNING   -           N/A     1           1          N/A
+idle     STOPPED   STOPPED   -           N/A     0           0          N/A
+
+$ sctl status api
+Name:        api
+State:       STOPPED
+Desired:     RUNNING
+Health:      -
+PID:         N/A
+Exit code:   0
+Restarts:    0
+Uptime:      N/A
+Reason:      dependency db is running but its health check is UNHEALTHY
+```
+
+`Reason` appears only when there is something to explain, and covers every way a
+program can be not running while it is still wanted:
+
+| State | Reason |
+| --- | --- |
+| `STOPPED` | `dependency db is running but its health check is UNHEALTHY` |
+| `FATAL` | `gave up after 1 restart` |
+| `EXITED` | `exited with status 3; autorestart is never` |
+| `EXITED` | `exited cleanly; autorestart is unexpected` |
+
+The two `EXITED` forms name the policy that decided not to bring the program back,
+which is the setting to change if that was not what you wanted. A program that is
+running has no `Reason` line, and neither has one that is simply not wanted. The
+same string is available to API clients in the `reason` field of the status
+response.
 
 ## Signals
 
@@ -443,10 +499,10 @@ startup sequence. `autostart` sets the initial desired state, `sctl start` and
 towards whatever its desired state currently is.
 
 Dependencies fall out of that: a program is started once every entry in its
-`depends_on` is `RUNNING`, and until then it simply stays `STOPPED` and is
-reconsidered. Nothing is scheduled in advance, so a dependency that takes a long
-time to come up, or that is started by hand much later, does not strand the
-programs behind it:
+`depends_on` has reached the condition it is waited on for, and until then it
+simply stays `STOPPED` and is reconsidered. Nothing is scheduled in advance, so a
+dependency that takes a long time to come up, or that is started by hand much
+later, does not strand the programs behind it:
 
 ```yaml
 programs:
@@ -457,6 +513,39 @@ programs:
     command: /usr/bin/api
     depends_on: [db]   # starts on its own once db is RUNNING
 ```
+
+### Waiting for readiness instead of for the process
+
+`depends_on` also accepts a mapping, which says what each dependency has to reach:
+
+```yaml
+programs:
+  db:
+    command: /usr/bin/postgres
+    health_check:
+      exec: pg_isready -q
+
+  api:
+    command: /usr/bin/api
+    depends_on:
+      db:
+        condition: healthy   # wait for the check to pass, not just for the process
+
+  logs:
+    command: /usr/bin/tailer
+    depends_on:
+      db:                    # no condition means started, as the list form does
+```
+
+- `condition: started` (the default) waits for the dependency to be `RUNNING`,
+  which is what `depends_on` has always meant.
+- `condition: healthy` also waits for the dependency's `health_check` to pass.
+  The dependency must declare one, or the configuration is rejected at startup
+  rather than leaving the dependent waiting for something that can never happen.
+
+Both forms can be mixed across programs, and the list form is unchanged: adding a
+`health_check` to a program does not start gating dependents that only asked for it
+to be running.
 
 Other behavior:
 
@@ -469,6 +558,10 @@ Other behavior:
 - `sctl start` waits for the outcome and reports it. If the program cannot start
   because something it depends on will never come up, it says so immediately and
   names the program actually responsible, however far down the chain it is.
+- A program that is being held back logs why, once per distinct reason rather than
+  on every pass of the reconcile loop. A dependency that stays down for an hour
+  costs one line, and the line changes as the reason does. The same explanation is
+  available at any time from `sctl status <name>`.
 - A desired state persists: stopping a program keeps it stopped, and a program
   waiting on a dependency starts as soon as that dependency is up, with no second
   command needed.
@@ -480,6 +573,87 @@ so total shutdown time is bounded by the slowest tier rather than by the sum of
 every program's `stopwaitsecs`.
 
 Circular dependencies are detected and rejected during configuration validation.
+
+## Health checks
+
+`RUNNING` means the process is alive: it stayed up for `startsecs` and its PID still
+answers. That is liveness, not readiness. A database forks early and then spends
+time on recovery before it accepts connections, and a service can be up long before
+it binds its socket or finishes its migrations. A dependent started in that window
+fails to connect and exits, and whether the stack recovers comes down to its restart
+policy.
+
+`startsecs` cannot close that gap, because it is a fixed sleep: too short on a cold
+start, which is exactly when the race bites, and paid in full on every restart when
+it is long enough. A health check observes readiness instead of guessing at it:
+
+```yaml
+programs:
+  db:
+    command: /usr/bin/postgres
+    health_check:
+      exec: pg_isready -q -h 127.0.0.1
+      interval: 2s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+```
+
+### Probe kinds
+
+Exactly one of these is required:
+
+- `exec`: run a command; exit status 0 means ready. It runs from the program's
+  `directory` and with the program's `environment`, so a check like `pg_isready`
+  sees the same settings the program was given. Like `command`, it is not run
+  through a shell; use `/bin/sh -c '...'` if you need one.
+- `tcp`: connect to `host:port`; a completed connection means ready.
+- `http`: issue a `GET`; any status below 400 means ready.
+
+### Settings
+
+- `interval`: how often to probe (default: 2s). The first probe runs immediately
+  rather than after one interval, so a program that is ready straight away does not
+  pay the interval as startup latency. A probe never overlaps itself: the next one
+  is due only after the previous attempt has finished.
+- `timeout`: how long one attempt may take before it counts as a failure (default: 5s)
+- `retries`: consecutive failures before the program is reported `UNHEALTHY`
+  (default: 3)
+- `start_period`: a window after the process starts during which failures do not
+  count, for a program that is known to need time to initialize (default: 0). It
+  applies only until the first successful check; after that, failures count normally.
+
+Durations are written as Go durations, such as `500ms`, `2s` or `1m`. An unparseable
+one is a startup error rather than a silent fallback to the default, as is a probe
+that sets none or more than one of `exec`, `tcp` and `http`.
+
+### What health does and does not do
+
+Health is reported alongside the process state, in the `HEALTH` column of
+`sctl status` and in the `health` field of the status API:
+
+```
+NAME       STATE     HEALTH      PID    EXIT_CODE   RESTARTS   UPTIME
+----       -----     ------      ---    ---------   --------   ------
+db         RUNNING   HEALTHY     4211   0           0          2m 10s
+api        RUNNING   -           4230   0           0          1m 44s
+```
+
+- `-`: no health check is configured, or the program is not running, where
+  readiness would mean nothing
+- `STARTING`: a configured check that has not passed yet
+- `HEALTHY`: the last attempt passed
+- `UNHEALTHY`: `retries` attempts in a row have failed
+
+A failing probe **does not** stop or restart the program. Supavisor reports what it
+observes, and restarts stay tied to the process actually exiting, so a flapping
+probe cannot take a working process down. What health decides is whether dependents
+that asked for `condition: healthy` may start, and a dependency that goes unhealthy
+after they are already up does not stop them, in the same way a dependency that
+crashes does not.
+
+Probes belong to a run: they start with the process and stop when it exits or is
+stopped, and the health goes back to `-`.
 
 ## Log Rotation
 
@@ -550,6 +724,30 @@ programs:
     command: /usr/bin/python app.py
     depends_on:
       - database
+    autostart: true
+    autorestart: always
+```
+
+### Process that waits for its database to be ready
+
+```yaml
+supavisor: {}
+
+programs:
+  database:
+    command: /usr/bin/postgres
+    autostart: true
+    autorestart: unexpected
+    health_check:
+      exec: pg_isready -q -h 127.0.0.1
+      interval: 2s
+      start_period: 60s
+
+  webapp:
+    command: /usr/bin/python app.py
+    depends_on:
+      database:
+        condition: healthy
     autostart: true
     autorestart: always
 ```

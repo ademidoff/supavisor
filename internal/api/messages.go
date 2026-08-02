@@ -27,9 +27,15 @@ type Response struct {
 
 // ProcessStatus represents the status of a process
 type ProcessStatus struct {
-	Name         string `json:"name"`
-	State        string `json:"state"`
-	Uptime       string `json:"uptime"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Desired string `json:"desired"`
+	Health  string `json:"health"`
+	Uptime  string `json:"uptime"`
+
+	// Reason is why a program that is wanted is not running yet, and is absent
+	// whenever nothing is holding it back.
+	Reason       string `json:"reason,omitempty"`
 	PID          int    `json:"pid"`
 	ExitCode     int    `json:"exit_code"`
 	RestartCount int    `json:"restart_count"`

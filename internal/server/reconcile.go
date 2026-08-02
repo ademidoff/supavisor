@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ademidoff/supavisor/internal/config"
 	"github.com/ademidoff/supavisor/internal/process"
 )
 
@@ -81,9 +82,10 @@ func (s *Server) reconcile() {
 		case desired == DesiredRunning && state == process.StateStopped:
 			ready, reason := s.dependenciesSatisfied(name)
 			if !ready {
-				s.logger.Debug("Not starting yet", "process", name, "reason", reason)
+				s.noteBlocked(name, reason)
 				continue
 			}
+			s.noteBlocked(name, "")
 			s.logger.Info("Starting process", "process", name)
 			s.runAction(name, proc.Start)
 
@@ -91,6 +93,28 @@ func (s *Server) reconcile() {
 			s.logger.Info("Stopping process", "process", name)
 			s.runAction(name, proc.Stop)
 		}
+	}
+}
+
+// noteBlocked reports why a program cannot start yet, once per distinct reason.
+// An empty reason forgets what was last reported, so that a program blocked
+// again later says so again.
+//
+// The reconciler runs every second and a dependency can be down for a long
+// time, so reporting every pass would bury everything else in the log; saying
+// nothing left a program that never starts with no explanation at all.
+func (s *Server) noteBlocked(name, reason string) {
+	s.processMutex.Lock()
+	changed := s.blockedReason[name] != reason
+	if reason == "" {
+		delete(s.blockedReason, name)
+	} else {
+		s.blockedReason[name] = reason
+	}
+	s.processMutex.Unlock()
+
+	if changed && reason != "" {
+		s.logger.Info("Not starting yet", "process", name, "reason", reason)
 	}
 }
 
@@ -117,22 +141,44 @@ func (s *Server) runAction(name string, action func() error) {
 	}()
 }
 
-// dependenciesSatisfied reports whether every program this one depends on is
-// running, and if not, which one is holding it back
+// dependenciesSatisfied reports whether every program this one depends on has
+// reached the condition it is waited on for, and if not, which one is holding
+// it back
 func (s *Server) dependenciesSatisfied(name string) (satisfied bool, reason string) {
-	for _, dep := range s.dependencyGraph.GetDependencies(name) {
+	for _, dep := range s.dependenciesOf(name) {
 		s.processMutex.RLock()
-		depProc, exists := s.processes[dep]
+		depProc, exists := s.processes[dep.Name]
 		s.processMutex.RUnlock()
 
 		if !exists {
-			return false, fmt.Sprintf("dependency %s is not configured", dep)
+			return false, fmt.Sprintf("dependency %s is not configured", dep.Name)
 		}
 		if state := depProc.GetState(); state != process.StateRunning {
-			return false, fmt.Sprintf("dependency %s is %s", dep, state)
+			return false, fmt.Sprintf("dependency %s is %s", dep.Name, state)
+		}
+		// Running only means the process is alive. A program that initializes
+		// after startup is not ready to be depended on until its check passes.
+		if dep.Condition == config.ConditionHealthy {
+			if health := depProc.GetHealth(); health != process.HealthHealthy {
+				return false, fmt.Sprintf("dependency %s is running but its health check is %s", dep.Name, health)
+			}
 		}
 	}
 	return true, ""
+}
+
+// dependenciesOf returns what a program depends on, with the condition each
+// dependency has to reach. The graph carries the ordering, the configuration
+// carries the conditions.
+func (s *Server) dependenciesOf(name string) []config.Dependency {
+	s.processMutex.RLock()
+	defer s.processMutex.RUnlock()
+
+	prog := s.config.Programs[name]
+	if prog == nil {
+		return nil
+	}
+	return prog.DependsOn
 }
 
 // programNames returns configured program names ordered by priority, lowest
@@ -175,6 +221,12 @@ func (s *Server) setDesired(name string, desired DesiredState) error {
 		return fmt.Errorf("process %s not found", name)
 	}
 	s.desired[name] = desired
+
+	// Nothing is holding back a program nobody is asking for, so a reason
+	// recorded while it was wanted must not outlive the request.
+	if desired == DesiredStopped {
+		delete(s.blockedReason, name)
+	}
 	return nil
 }
 

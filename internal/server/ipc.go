@@ -222,7 +222,7 @@ func (s *IPCServer) handleConnection(conn net.Conn) {
 func (s *IPCServer) handleRequest(req *api.Request) *api.Response {
 	switch req.Command {
 	case api.CommandStatus:
-		return s.handleStatus()
+		return s.handleStatus(req.Args)
 	case api.CommandStart:
 		if len(req.Args) == 0 {
 			return &api.Response{Success: false, Message: msgProcessNameRequired}
@@ -247,15 +247,25 @@ func (s *IPCServer) handleRequest(req *api.Request) *api.Response {
 	}
 }
 
-// handleStatus returns the status of all processes
-func (s *IPCServer) handleStatus() *api.Response {
+// handleStatus returns the status of every process, or of one named process
+func (s *IPCServer) handleStatus(args []string) *api.Response {
 	statuses := s.server.GetStatus()
-	processStatuses := make([]api.ProcessStatus, 0, len(statuses))
 
+	if len(args) > 0 {
+		statuses = selectProcess(statuses, args[0])
+		if len(statuses) == 0 {
+			return &api.Response{Success: false, Message: fmt.Sprintf("process %s not found", args[0])}
+		}
+	}
+
+	processStatuses := make([]api.ProcessStatus, 0, len(statuses))
 	for _, status := range statuses {
 		processStatuses = append(processStatuses, api.ProcessStatus{
 			Name:         status.Name,
 			State:        string(status.State),
+			Desired:      string(status.Desired),
+			Health:       string(status.Health),
+			Reason:       status.Reason,
 			PID:          status.PID,
 			ExitCode:     status.ExitCode,
 			RestartCount: status.RestartCount,
@@ -267,6 +277,17 @@ func (s *IPCServer) handleStatus() *api.Response {
 		Success: true,
 		Data:    map[string]any{"processes": processStatuses},
 	}
+}
+
+// selectProcess narrows a status list to one program, or to nothing if that
+// program is not configured
+func selectProcess(statuses []ProcessStatusInfo, name string) []ProcessStatusInfo {
+	for _, status := range statuses {
+		if status.Name == name {
+			return []ProcessStatusInfo{status}
+		}
+	}
+	return nil
 }
 
 // handleStart starts a process

@@ -63,7 +63,11 @@ type SupavisorConfig struct {
 
 // ProgramConfig represents configuration for a single program
 type ProgramConfig struct {
-	Environment           map[string]string
+	Environment map[string]string
+
+	// HealthCheck is nil for a program that does not declare one, in which case
+	// nothing about the program can be said beyond whether it is running.
+	HealthCheck           *HealthCheck
 	Name                  string
 	Command               string
 	Directory             string
@@ -71,7 +75,7 @@ type ProgramConfig struct {
 	StdoutLogfile         string
 	StderrLogfile         string
 	User                  string
-	DependsOn             []string
+	DependsOn             []Dependency
 	Autostart             bool
 	Priority              int
 	StartSecs             int
@@ -84,6 +88,16 @@ type ProgramConfig struct {
 	StderrLogfileMaxBytes int64
 	StderrLogfileBackups  int
 	StderrLogfileMaxAge   int // days
+}
+
+// DependencyNames returns the programs this one depends on, without the
+// condition each has to reach. The dependency graph is about ordering only.
+func (p *ProgramConfig) DependencyNames() []string {
+	names := make([]string, 0, len(p.DependsOn))
+	for _, dep := range p.DependsOn {
+		names = append(names, dep.Name)
+	}
+	return names
 }
 
 // Config represents the complete configuration
@@ -112,6 +126,7 @@ type supavisorFile struct {
 
 type programFile struct {
 	Environment map[string]string `yaml:"environment"`
+	HealthCheck *healthCheckFile  `yaml:"health_check"`
 	Autostart   *bool             `yaml:"autostart"`
 
 	// Pointers so an explicit 0 is distinguishable from an absent setting:
@@ -125,16 +140,16 @@ type programFile struct {
 	StderrLogfileBackups *int `yaml:"stderr_logfile_backups"`
 	StderrLogfileMaxAge  *int `yaml:"stderr_logfile_maxage"`
 
-	Command               string   `yaml:"command"`
-	Directory             string   `yaml:"directory"`
-	Autorestart           string   `yaml:"autorestart"`
-	StopSignal            string   `yaml:"stopsignal"`
-	StdoutLogfile         string   `yaml:"stdout_logfile"`
-	StderrLogfile         string   `yaml:"stderr_logfile"`
-	StdoutLogfileMaxBytes string   `yaml:"stdout_logfile_maxbytes"`
-	StderrLogfileMaxBytes string   `yaml:"stderr_logfile_maxbytes"`
-	User                  string   `yaml:"user"`
-	DependsOn             []string `yaml:"depends_on"`
+	Command               string        `yaml:"command"`
+	Directory             string        `yaml:"directory"`
+	Autorestart           string        `yaml:"autorestart"`
+	StopSignal            string        `yaml:"stopsignal"`
+	StdoutLogfile         string        `yaml:"stdout_logfile"`
+	StderrLogfile         string        `yaml:"stderr_logfile"`
+	StdoutLogfileMaxBytes string        `yaml:"stdout_logfile_maxbytes"`
+	StderrLogfileMaxBytes string        `yaml:"stderr_logfile_maxbytes"`
+	User                  string        `yaml:"user"`
+	DependsOn             dependsOnFile `yaml:"depends_on"`
 }
 
 // ParseConfigFile parses a single YAML configuration file. It does not look for
@@ -354,6 +369,11 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		return nil, err
 	}
 
+	healthCheck, err := convertHealthCheck(raw.HealthCheck)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ProgramConfig{
 		Name:                  name,
 		Command:               raw.Command,
@@ -362,6 +382,7 @@ func convertProgram(name string, raw *programFile) (*ProgramConfig, error) {
 		Autostart:             autostart,
 		Autorestart:           autorestart,
 		DependsOn:             raw.DependsOn,
+		HealthCheck:           healthCheck,
 		Priority:              priority,
 		StartSecs:             startSecs,
 		StopSignal:            stopSignal,
@@ -490,11 +511,16 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Check that all dependencies exist
+	// Check that all dependencies exist, and that a dependency waited on for
+	// health has something to report
 	for name, prog := range c.Programs {
 		for _, dep := range prog.DependsOn {
-			if _, exists := c.Programs[dep]; !exists {
-				return fmt.Errorf("program %s depends on %s which does not exist", name, dep)
+			target, exists := c.Programs[dep.Name]
+			if !exists {
+				return fmt.Errorf("program %s depends on %s which does not exist", name, dep.Name)
+			}
+			if dep.Condition == ConditionHealthy && target.HealthCheck == nil {
+				return fmt.Errorf("program %s waits for %s to be healthy, but %s has no health_check", name, dep.Name, dep.Name)
 			}
 		}
 	}
@@ -563,12 +589,12 @@ func (c *Config) checkCircularDependency(name string, visited, recStack map[stri
 	}
 
 	for _, dep := range prog.DependsOn {
-		if !visited[dep] {
-			if err := c.checkCircularDependency(dep, visited, recStack); err != nil {
+		if !visited[dep.Name] {
+			if err := c.checkCircularDependency(dep.Name, visited, recStack); err != nil {
 				return err
 			}
-		} else if recStack[dep] {
-			return fmt.Errorf("circular dependency detected: %s -> %s", name, dep)
+		} else if recStack[dep.Name] {
+			return fmt.Errorf("circular dependency detected: %s -> %s", name, dep.Name)
 		}
 	}
 

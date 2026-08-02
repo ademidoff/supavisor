@@ -50,14 +50,20 @@ type Process struct {
 	// onStateChange is set once before the process is started
 	onStateChange func(name string, prevState, newState State)
 
+	// onHealthChange is set once before the process is started
+	onHealthChange func(name string, prevHealth, health Health)
+
 	cmd           *exec.Cmd
 	cancel        context.CancelFunc
+	healthCancel  context.CancelFunc
 	monitorDone   chan struct{}
 	stopRequested chan struct{}
+	healthDone    chan struct{}
 	lastError     error
 	startTime     time.Time
 	stopTime      time.Time
 	state         State
+	health        Health
 	streams       []*logStream
 
 	// mu guards all mutable run state, from cmd down to stoppedExternally.
@@ -85,6 +91,7 @@ func NewProcess(cfg *config.ProgramConfig, logger *slog.Logger) *Process {
 		config: cfg,
 		logger: logger.With("component", "process", "process", cfg.Name),
 		state:  StateStopped,
+		health: HealthNone,
 	}
 }
 
@@ -223,6 +230,10 @@ func (p *Process) Start() error {
 
 	p.logger.Info("Started process", "pid", pid)
 
+	// Before the monitor: it tears the checker down when the process exits, and
+	// a process that exits straight away would otherwise leave one running.
+	p.startHealthChecks(ctx)
+
 	go p.monitor(ctx, cmd, monitorDone, stopRequested)
 	go p.waitForStartSuccess(ctx, cmd)
 
@@ -258,14 +269,10 @@ func (p *Process) buildCommand(ctx context.Context, stdout, stderr *os.File) (*e
 		cmd.Dir = p.config.Directory
 	}
 
-	env := os.Environ()
 	if len(p.config.Environment) > 0 {
 		p.logger.Info("Setting environment variables", "count", len(p.config.Environment))
 	}
-	for k, v := range p.config.Environment {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-	cmd.Env = env
+	cmd.Env = processEnv(p.config)
 
 	// Leave Stdout/Stderr nil when there is no capture pipe: assigning a nil
 	// *os.File would hand the child a closed descriptor instead of /dev/null.
@@ -277,6 +284,16 @@ func (p *Process) buildCommand(ctx context.Context, stdout, stderr *os.File) (*e
 	}
 
 	return cmd, nil
+}
+
+// processEnv returns the environment a program runs with, which its health
+// check probe also inherits
+func processEnv(cfg *config.ProgramConfig) []string {
+	env := os.Environ()
+	for k, v := range cfg.Environment {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	return env
 }
 
 // waitForStartSuccess promotes the process to RUNNING once it has stayed alive
@@ -323,6 +340,10 @@ func (p *Process) Stop() error {
 	if stopRequested != nil {
 		close(stopRequested)
 	}
+
+	// A probe must not outlive the process it is checking, and readiness means
+	// nothing for a program that is going away.
+	p.stopHealthChecks()
 
 	// Nothing is running in these states, but the monitor may be sitting in a
 	// restart backoff. Canceling the context is what actually stops it.
@@ -421,6 +442,10 @@ func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done, stopRequeste
 	// also hold the log pipe open, so removing them lets the drain finish
 	// instead of timing out.
 	p.killLingeringGroup(cmd.Process.Pid)
+
+	// Probing a process that has exited would keep reporting on whatever else
+	// answers at that address until something stops the checker.
+	p.stopHealthChecks()
 
 	// Flush whatever the process left in the pipes before recording the exit.
 	p.stopLogging()

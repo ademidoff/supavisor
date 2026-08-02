@@ -103,11 +103,15 @@ func (s *Server) applyPrograms(newCfg *config.Config, previous map[string]Desire
 		delete(s.processes, name)
 		delete(s.desired, name)
 		delete(s.inflight, name)
+		delete(s.blockedReason, name)
 	}
 
 	for _, name := range changed {
 		s.processes[name] = s.newProcess(newCfg.Programs[name])
 		s.desired[name] = previous[name]
+		// The program is being replaced, so whatever was reported about the
+		// previous definition should be reported again for this one.
+		delete(s.blockedReason, name)
 	}
 
 	for _, name := range added {
@@ -173,7 +177,7 @@ func changedDaemonSetting(old, updated *config.SupavisorConfig) string {
 func buildDependencyGraph(cfg *config.Config) *dependency.Graph {
 	graph := dependency.NewGraph()
 	for name, progConfig := range cfg.Programs {
-		graph.AddNode(name, progConfig.DependsOn)
+		graph.AddNode(name, progConfig.DependencyNames())
 	}
 	return graph
 }
@@ -182,5 +186,6 @@ func buildDependencyGraph(cfg *config.Config) *dependency.Graph {
 func (s *Server) newProcess(cfg *config.ProgramConfig) *process.Process {
 	proc := process.NewProcess(cfg, s.processLogger)
 	proc.SetStateChangeCallback(s.onProcessStateChange)
+	proc.SetHealthChangeCallback(s.onProcessHealthChange)
 	return proc
 }
