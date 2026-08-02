@@ -33,19 +33,15 @@ lint-install:
 # Run static analysis with golangci-lint
 lint: lint-install
 	@echo "Running golangci-lint..."
-	@if [ -z "$(GOLANGCI_LINT)" ]; then \
-		echo "Error: could not find golangci-lint in ./bin/"; \
-		exit 1; \
-	fi; \
 	$(GOLANGCI_LINT) run --timeout=5m ./...
 	@echo "Linting complete!"
 
 # Format code with gofumpt and goimports
 format:
-	@echo "Formatting code with gofumpt..."
-	@go tool gofumpt -w .
 	@echo "Organizing imports with goimports..."
 	@go tool goimports -local github.com/ademidoff/supavisor -w .
+	@echo "Formatting code with gofumpt..."
+	@go tool gofumpt -w .
 	@echo "Formatting complete!"
 
 # Clean build artifacts
