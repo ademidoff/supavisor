@@ -9,7 +9,7 @@ GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci
 # Build the binaries
 build:
 	@echo "Formatting the code..."
-	@make format
+	$(MAKE) format
 	@echo "Building supavisor..."
 	@go build -o bin/supavisor ./cmd/supavisor
 	@echo "Building sctl..."
