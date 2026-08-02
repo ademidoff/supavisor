@@ -82,16 +82,14 @@ func (s *Server) stopForReload(names []string) {
 			continue
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			err := s.awaitState(name, func(state process.State) bool {
 				return state == process.StateStopped
 			})
 			if err != nil {
 				s.logger.Warn("failed to stop process for reload", "process", name, "error", err)
 			}
-		}()
+		})
 	}
 
 	s.requestReconcile()

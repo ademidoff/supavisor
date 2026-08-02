@@ -221,13 +221,11 @@ func (s *Server) stopAllProcesses() {
 				continue
 			}
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if stopErr := proc.Stop(); stopErr != nil {
 					s.logger.Warn("failed to stop process", "process", name, "error", stopErr)
 				}
-			}()
+			})
 		}
 		wg.Wait()
 	}
