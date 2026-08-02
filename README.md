@@ -511,6 +511,9 @@ Other behavior:
 - `sctl start` waits for the outcome and reports it. If the program cannot start
   because something it depends on will never come up, it says so immediately and
   names the program actually responsible, however far down the chain it is.
+- A program that is being held back logs why, once per distinct reason rather than
+  on every pass of the reconcile loop. A dependency that stays down for an hour
+  costs one line, and the line changes as the reason does.
 - A desired state persists: stopping a program keeps it stopped, and a program
   waiting on a dependency starts as soon as that dependency is up, with no second
   command needed.

@@ -82,9 +82,10 @@ func (s *Server) reconcile() {
 		case desired == DesiredRunning && state == process.StateStopped:
 			ready, reason := s.dependenciesSatisfied(name)
 			if !ready {
-				s.logger.Debug("Not starting yet", "process", name, "reason", reason)
+				s.noteBlocked(name, reason)
 				continue
 			}
+			s.noteBlocked(name, "")
 			s.logger.Info("Starting process", "process", name)
 			s.runAction(name, proc.Start)
 
@@ -92,6 +93,28 @@ func (s *Server) reconcile() {
 			s.logger.Info("Stopping process", "process", name)
 			s.runAction(name, proc.Stop)
 		}
+	}
+}
+
+// noteBlocked reports why a program cannot start yet, once per distinct reason.
+// An empty reason forgets what was last reported, so that a program blocked
+// again later says so again.
+//
+// The reconciler runs every second and a dependency can be down for a long
+// time, so reporting every pass would bury everything else in the log; saying
+// nothing left a program that never starts with no explanation at all.
+func (s *Server) noteBlocked(name, reason string) {
+	s.processMutex.Lock()
+	changed := s.blockedReason[name] != reason
+	if reason == "" {
+		delete(s.blockedReason, name)
+	} else {
+		s.blockedReason[name] = reason
+	}
+	s.processMutex.Unlock()
+
+	if changed && reason != "" {
+		s.logger.Info("Not starting yet", "process", name, "reason", reason)
 	}
 }
 

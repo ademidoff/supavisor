@@ -49,6 +49,7 @@ type Server struct {
 	processes       map[string]*process.Process
 	desired         map[string]DesiredState
 	inflight        map[string]bool
+	blockedReason   map[string]string
 	dependencyGraph *dependency.Graph
 	ipcServer       *IPCServer
 	pidLock         *pidLock
@@ -88,6 +89,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		processes:       make(map[string]*process.Process, len(cfg.Programs)),
 		desired:         make(map[string]DesiredState, len(cfg.Programs)),
 		inflight:        make(map[string]bool),
+		blockedReason:   make(map[string]string),
 		dependencyGraph: graph,
 		stopChan:        make(chan struct{}),
 		stateDirty:      make(chan struct{}, 1),

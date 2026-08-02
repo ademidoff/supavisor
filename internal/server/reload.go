@@ -103,11 +103,15 @@ func (s *Server) applyPrograms(newCfg *config.Config, previous map[string]Desire
 		delete(s.processes, name)
 		delete(s.desired, name)
 		delete(s.inflight, name)
+		delete(s.blockedReason, name)
 	}
 
 	for _, name := range changed {
 		s.processes[name] = s.newProcess(newCfg.Programs[name])
 		s.desired[name] = previous[name]
+		// The program is being replaced, so whatever was reported about the
+		// previous definition should be reported again for this one.
+		delete(s.blockedReason, name)
 	}
 
 	for _, name := range added {

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -17,6 +19,12 @@ import (
 // newTestServer builds a server over a throwaway socket and pid file. Paths go
 // under /tmp because a unix socket path is limited to ~104 bytes.
 func newTestServer(t *testing.T, programs map[string]*config.ProgramConfig) *Server {
+	t.Helper()
+	return newTestServerWithLogger(t, programs, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// newTestServerWithLogger is newTestServer for a test that reads the log
+func newTestServerWithLogger(t *testing.T, programs map[string]*config.ProgramConfig, logger *slog.Logger) *Server {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("/tmp", "sv-rec")
@@ -43,7 +51,7 @@ func newTestServer(t *testing.T, programs map[string]*config.ProgramConfig) *Ser
 		Programs: programs,
 	}
 
-	sv, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	sv, err := New(cfg, logger)
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -231,6 +239,94 @@ func TestReconcile_StartedConditionIgnoresHealth(t *testing.T) {
 
 	// db never passes its check, and api must come up regardless.
 	waitForState(t, sv, "api", process.StateRunning, 15*time.Second)
+}
+
+// TestReconcile_ReportsABlockedStartOncePerReason covers the log of a program
+// that is waiting: the reconciler looks every second, so repeating the same
+// reason would bury everything else, and saying nothing left a program that
+// never starts with no explanation at all.
+func TestReconcile_ReportsABlockedStartOncePerReason(t *testing.T) {
+	var log lockedBuffer
+	logger := slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	sv := newTestServerWithLogger(t, map[string]*config.ProgramConfig{
+		"dep": {
+			Command: "/bin/sleep 60", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"dependent": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, DependsOn: []config.Dependency{{Name: "dep"}},
+			StartSecs: 1, MaxRestarts: 1,
+		},
+	}, logger)
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// Several reconcile passes over a situation that has not changed
+	time.Sleep(3 * time.Second)
+
+	reasons := blockedReasons(log.String())
+	if len(reasons) != 1 {
+		t.Fatalf("Expected one report while nothing changed, got %d: %v", len(reasons), reasons)
+	}
+	if !strings.Contains(reasons[0], "dep") {
+		t.Errorf("Expected the report to name the dependency, got %s", reasons[0])
+	}
+
+	// Bringing the dependency up moves the dependent through further reasons on
+	// its way to starting; none of them may repeat.
+	if err := sv.StartProcess("dep"); err != nil {
+		t.Fatalf("StartProcess(dep) failed: %v", err)
+	}
+	waitForState(t, sv, "dependent", process.StateRunning, 10*time.Second)
+
+	reasons = blockedReasons(log.String())
+	seen := make(map[string]bool, len(reasons))
+	for _, reason := range reasons {
+		if seen[reason] {
+			t.Errorf("Reason reported more than once: %s", reason)
+		}
+		seen[reason] = true
+	}
+}
+
+// lockedBuffer collects log output written from the reconcile loop while the
+// test reads it
+type lockedBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// blockedReasons returns the reason of every "Not starting yet" line logged
+func blockedReasons(log string) []string {
+	reasons := make([]string, 0)
+
+	for line := range strings.SplitSeq(log, "\n") {
+		if !strings.Contains(line, "Not starting yet") {
+			continue
+		}
+		_, reason, found := strings.Cut(line, "reason=")
+		if found {
+			reasons = append(reasons, reason)
+		}
+	}
+	return reasons
 }
 
 // TestReconcile_ListsEveryConfiguredProgram covers programs that have never
