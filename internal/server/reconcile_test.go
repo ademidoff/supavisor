@@ -413,6 +413,74 @@ func TestStatus_ExplainsAProgramThatGaveUp(t *testing.T) {
 	}
 }
 
+// TestStatus_ExplainsAProgramThatWasLeftExited covers the third way a program
+// can be wanted and not running: it exited on its own and the restart policy
+// declined to bring it back, which EXITED alone does not say.
+func TestStatus_ExplainsAProgramThatWasLeftExited(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"oneshot": {
+			Command: "/bin/sh -c 'exit 3'", Autostart: true,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 3,
+		},
+		"cleanexit": {
+			Command: "/bin/sh -c 'exit 0'", Autostart: true,
+			Autorestart: config.RestartUnexpected, StartSecs: 1, MaxRestarts: 3,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "oneshot", process.StateExited, 10*time.Second)
+	waitForState(t, sv, "cleanexit", process.StateExited, 10*time.Second)
+
+	byName := statusByName(sv)
+	if got, want := byName["oneshot"].Reason, exitedReason(config.RestartNever, 3); got != want {
+		t.Errorf("Expected the reason to name the policy that left it, got %s, want %s", got, want)
+	}
+	if got, want := byName["cleanexit"].Reason, exitedReason(config.RestartUnexpected, 0); got != want {
+		t.Errorf("Expected a clean exit to be reported as expected, got %s, want %s", got, want)
+	}
+}
+
+func TestExitedReason(t *testing.T) {
+	tests := []struct {
+		name     string
+		policy   config.RestartPolicy
+		want     string
+		exitCode int
+	}{
+		{
+			name: "never restarts", policy: config.RestartNever, exitCode: 1,
+			want: "exited with status 1; autorestart is never",
+		},
+		{
+			name: "never restarts after a clean exit", policy: config.RestartNever, exitCode: 0,
+			want: "exited with status 0; autorestart is never",
+		},
+		{
+			name: "a clean exit is expected", policy: config.RestartUnexpected, exitCode: 0,
+			want: "exited cleanly; autorestart is unexpected",
+		},
+		// Would have been restarted, so the restart was abandoned rather than
+		// declined and there is no policy to point at.
+		{
+			name: "restart abandoned", policy: config.RestartAlways, exitCode: 2,
+			want: "exited with status 2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitedReason(tt.policy, tt.exitCode); got != tt.want {
+				t.Errorf("exitedReason(%s, %d) = %s, want %s", tt.policy, tt.exitCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRestartPhrase(t *testing.T) {
 	tests := []struct {
 		want     string

@@ -319,7 +319,7 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 			State:        state,
 			Desired:      s.desired[name],
 			Health:       proc.GetHealth(),
-			Reason:       s.notRunningReason(name, state, restartCount),
+			Reason:       s.notRunningReason(name, state, restartCount, exitCode),
 			PID:          pid,
 			ExitCode:     exitCode,
 			RestartCount: restartCount,
@@ -338,17 +338,51 @@ func (s *Server) GetStatus() []ProcessStatusInfo {
 // notRunningReason explains why a program is not running, or returns an empty
 // string when there is nothing to explain.
 //
-// A program can be held back by a dependency, or it can have stopped trying on
-// its own; both leave it not running while it is still wanted, and the state
-// alone does not say which. Must be called with processMutex held.
-func (s *Server) notRunningReason(name string, state process.State, restartCount int) string {
+// A program can be held back by a dependency, it can have given up, or it can
+// have exited under a policy that leaves it alone. All three leave it not
+// running while it may still be wanted, and the state alone does not say which.
+// Must be called with processMutex held.
+func (s *Server) notRunningReason(name string, state process.State, restartCount, exitCode int) string {
 	if reason := s.blockedReason[name]; reason != "" {
 		return reason
 	}
+
 	if state == process.StateFatal {
 		return fmt.Sprintf("gave up after %s", restartPhrase(restartCount))
 	}
+	if state == process.StateExited {
+		return exitedReason(s.autorestartPolicy(name), exitCode)
+	}
 	return ""
+}
+
+// reasonCleanExit is the whole explanation for a zero exit under the default
+// policy: nothing went wrong, so there is nothing to restart.
+const reasonCleanExit = "exited cleanly; autorestart is unexpected"
+
+// exitedReason explains why a program that exited on its own was left that way.
+// It names the policy that decided it, which is the setting to change.
+func exitedReason(policy config.RestartPolicy, exitCode int) string {
+	switch {
+	case policy == config.RestartNever:
+		return fmt.Sprintf("exited with status %d; autorestart is never", exitCode)
+	case policy == config.RestartUnexpected && exitCode == 0:
+		return reasonCleanExit
+	}
+
+	// Every other combination would have been restarted, so getting here means
+	// the restart was abandoned rather than declined.
+	return fmt.Sprintf("exited with status %d", exitCode)
+}
+
+// autorestartPolicy returns the restart policy of a program. Must be called
+// with processMutex held.
+func (s *Server) autorestartPolicy(name string) config.RestartPolicy {
+	prog := s.config.Programs[name]
+	if prog == nil {
+		return ""
+	}
+	return prog.Autorestart
 }
 
 // restartPhrase renders a restart count as something that reads in a sentence

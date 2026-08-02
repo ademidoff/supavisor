@@ -296,10 +296,19 @@ Uptime:      N/A
 Reason:      dependency db is running but its health check is UNHEALTHY
 ```
 
-`Reason` appears only when there is something to explain, and covers both ways a
-program can be wanted without running: held back by a dependency, as above, or
-having stopped trying on its own, where it reads `gave up after 1 restart`. A
-program that is running, or that nobody has asked for, has no `Reason` line. The
+`Reason` appears only when there is something to explain, and covers every way a
+program can be not running while it is still wanted:
+
+| State | Reason |
+| --- | --- |
+| `STOPPED` | `dependency db is running but its health check is UNHEALTHY` |
+| `FATAL` | `gave up after 1 restart` |
+| `EXITED` | `exited with status 3; autorestart is never` |
+| `EXITED` | `exited cleanly; autorestart is unexpected` |
+
+The two `EXITED` forms name the policy that decided not to bring the program back,
+which is the setting to change if that was not what you wanted. A program that is
+running has no `Reason` line, and neither has one that is simply not wanted. The
 same string is available to API clients in the `reason` field of the status
 response.
 
