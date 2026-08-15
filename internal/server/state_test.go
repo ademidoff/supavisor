@@ -28,38 +28,38 @@ func testServer(t *testing.T, stateFile string) *Server {
 // startTestChild spawns a process in its own group and returns its PID along
 // with a function reporting whether it has terminated.
 //
-// Termination is observed through Wait rather than a signal check: the child
-// belongs to the test process, so between being killed and being reaped it is a
-// zombie that still answers signal 0. A real orphan is a child of init and is
-// reaped as soon as it dies.
+// Termination is observed by signal, not by Wait. The reaper started in
+// TestMain owns every wait4 in this binary, so waiting here as well would race
+// it for the status. It also removes the reason this used to wait: a killed
+// child is collected by the reaper rather than lingering as a zombie that still
+// answers signal 0.
 func startTestChild(t *testing.T) (pid int, terminated func() bool) {
 	t.Helper()
 
-	cmd := exec.CommandContext(t.Context(), "/bin/sleep", "300")
+	//nolint:noctx // the reaper owns the wait, so a context-bound command would fight it
+	cmd := exec.Command("/bin/sleep", "300")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	err := cmd.Start()
+	if err != nil {
 		t.Fatalf("Failed to start test child: %v", err)
 	}
 	pid = cmd.Process.Pid
 
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
-		_ = cmd.Wait()
-	}()
-
 	t.Cleanup(func() {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-exited
+		// Nothing waited on it, so the handle is ours to give back.
+		_ = cmd.Process.Release()
 	})
 
 	return pid, func() bool {
-		select {
-		case <-exited:
-			return true
-		case <-time.After(2 * time.Second):
-			return false
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if !alive(pid) {
+				return true
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
+		return false
 	}
 }
 
