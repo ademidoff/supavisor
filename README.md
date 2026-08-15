@@ -369,6 +369,25 @@ so a typo cannot take running programs down. Daemon-level settings (`pidfile`,
 `socket`, `socket_group`, `logfile`, `log_format`, `log_level`) are bound at
 startup; changing one is reported by name and needs a restart.
 
+Reload reports what it applied, naming only the categories that have something in
+them:
+
+```
+$ sctl reload
+configuration reloaded
+  changed: victoriametrics, vmalert
+
+$ sctl reload
+configuration reloaded, nothing changed
+```
+
+This matters to anything driving supavisor over the socket rather than by hand. A
+program that owns a drop-in directory, writes fragments into it and then reloads
+can check whether its own name is in `changed`, because a program whose definition
+changed is stopped and replaced — including when it is the one that asked for the
+reload. The reload itself still completes; what the caller loses is the chance to
+see it finish.
+
 ## Recovering from a crash
 
 If supavisor is killed rather than shut down, the processes it manages keep

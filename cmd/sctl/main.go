@@ -81,7 +81,8 @@ func main() {
 	}
 
 	// Print response based on command
-	if command == api.CommandStatus {
+	switch command {
+	case api.CommandStatus:
 		// A named program gets the detail view, which has room for why it is
 		// not running; the table stays narrow enough to read.
 		if len(args) > 0 {
@@ -89,9 +90,50 @@ func main() {
 		} else {
 			printStatus(*resp)
 		}
+	case api.CommandReload:
+		printReload(*resp)
+	default:
+		fmt.Println(resp.Message)
+	}
+}
+
+// printReload reports what the reload applied. Each category is named only when
+// it has something in it, so a reload that changed one program says so in one
+// line rather than printing two empty lists beside it.
+func printReload(resp api.Response) {
+	fmt.Println(resp.Message)
+
+	applied, ok := reloadDiff(resp)
+	if !ok {
 		return
 	}
-	fmt.Println(resp.Message)
+	for _, category := range []struct {
+		label string
+		names []string
+	}{
+		{"added", applied.Added},
+		{"removed", applied.Removed},
+		{"changed", applied.Changed},
+	} {
+		if len(category.names) > 0 {
+			fmt.Printf("  %s: %s\n", category.label, strings.Join(category.names, ", "))
+		}
+	}
+}
+
+// reloadDiff recovers the typed diff from a response whose payload has already
+// been decoded into the generic shape JSON gives us
+func reloadDiff(resp api.Response) (api.ReloadResponse, bool) {
+	var applied api.ReloadResponse
+
+	raw, err := json.Marshal(resp.Data)
+	if err != nil {
+		return applied, false
+	}
+	if err := json.Unmarshal(raw, &applied); err != nil {
+		return applied, false
+	}
+	return applied, true
 }
 
 func printStatus(resp api.Response) {

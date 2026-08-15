@@ -314,12 +314,16 @@ func (s *IPCServer) handleRestart(name string) *api.Response {
 	return &api.Response{Success: true, Message: fmt.Sprintf("process %s restarted", name)}
 }
 
-// handleReload reloads the configuration
+// handleReload reloads the configuration and reports what it applied
 func (s *IPCServer) handleReload() *api.Response {
-	if err := s.server.Reload(); err != nil {
+	applied, err := s.server.Reload()
+	if err != nil {
 		return &api.Response{Success: false, Message: err.Error()}
 	}
-	return &api.Response{Success: true, Message: "configuration reloaded"}
+	if applied.Empty() {
+		return &api.Response{Success: true, Message: "configuration reloaded, nothing changed"}
+	}
+	return &api.Response{Success: true, Message: "configuration reloaded", Data: applied}
 }
 
 // handleShutdown shuts down the supavisor
