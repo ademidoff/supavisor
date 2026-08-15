@@ -138,6 +138,10 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	// Before anything is started, so that an orphan reparented onto us is
+	// collected even while no program is running yet.
+	process.StartReaping(s.processLogger)
+
 	// Holding the lock means no other daemon is running, so anything still
 	// alive from a previous one is an orphan of a crash.
 	s.reapOrphans()

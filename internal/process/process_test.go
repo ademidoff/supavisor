@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -542,5 +543,53 @@ func TestParseCommand(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStartCheckDoesNotReportACleanExitAsAStartFailure guards a regression from
+// the reaper change: the start check used to react to the exit itself and set
+// BACKOFF, beating the monitor to it, so a program that exited 0 was published
+// as having failed to start. BACKOFF means "failed to start, waiting before
+// retry" (see internal/process/state.go), and sctl status showed it for a job
+// that had finished cleanly.
+func TestStartCheckDoesNotReportACleanExitAsAStartFailure(t *testing.T) {
+	cfg := &config.ProgramConfig{
+		Name:          "quick",
+		Command:       "/bin/sh -c 'exit 0'",
+		Autorestart:   config.RestartNever,
+		StartSecs:     1,
+		MaxRestarts:   1,
+		StdoutLogfile: filepath.Join(t.TempDir(), "out.log"),
+		Environment:   make(map[string]string),
+	}
+
+	proc := NewProcess(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	var mu sync.Mutex
+	var seen []State
+	proc.SetStateChangeCallback(func(_ string, _, state State) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, state)
+	})
+
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	// Past startsecs, so the start check has had its say either way.
+	time.Sleep(2 * time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, state := range seen {
+		if state == StateBackoff {
+			t.Errorf("A program that exited 0 was reported as BACKOFF, transitions: %v", seen)
+			break
+		}
+	}
+	if state := proc.GetState(); state != StateExited {
+		t.Errorf("Expected the program to settle on EXITED, got %s", state)
 	}
 }

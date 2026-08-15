@@ -16,7 +16,6 @@ supavisor manages processes using the following pattern:
 
 ### Unit Tests
 - Use `testify/assert` and `testify/require`
-- Mock generation via `mockery` (config in `.mockery.yaml`)
 - Run tests: `make test`
 - Cover all code with tests
 
