@@ -171,9 +171,9 @@ func (p *Process) Start() error {
 		p.mu.Unlock()
 		return fmt.Errorf("process %s is already running or starting", p.config.Name)
 	}
-	// Every run gets a fresh context. Stop() cancels the previous one and
-	// exec.CommandContext refuses to start against a canceled context, so
-	// reusing it would make a process unstartable after its first stop.
+	// Every run gets a fresh context, canceled by Stop(). It drives this run's
+	// health checks and restart backoff, so reusing a canceled one would leave
+	// a restarted process with neither.
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -193,7 +193,7 @@ func (p *Process) Start() error {
 		return fmt.Errorf("failed to set up log capture: %w", err)
 	}
 
-	cmd, err := p.buildCommand(ctx, stdout, stderr)
+	cmd, err := p.buildCommand(stdout, stderr)
 	if err != nil {
 		p.stopLogging()
 		cancel()
@@ -202,7 +202,8 @@ func (p *Process) Start() error {
 	}
 
 	p.logger.Info("Executing command", "command", cmd.String())
-	if err := cmd.Start(); err != nil {
+	exited, err := p.spawn(cmd)
+	if err != nil {
 		p.logger.Error("Failed to start", "error", err)
 		p.stopLogging()
 		cancel()
@@ -216,8 +217,30 @@ func (p *Process) Start() error {
 
 	monitorDone := make(chan struct{})
 	stopRequested := make(chan struct{})
+	// Closed as soon as the monitor sees the exit, so the start check can tell
+	// a process that fell over from one that is still up without probing a PID
+	// that may already have been reused.
+	runExited := make(chan struct{})
 
+	pid := p.recordRun(cmd, monitorDone, stopRequested)
+	p.logger.Info("Started process", "pid", pid)
+
+	// Before the monitor: it tears the checker down when the process exits, and
+	// a process that exits straight away would otherwise leave one running.
+	p.startHealthChecks(ctx)
+
+	go p.monitor(ctx, cmd, exited, runExited, monitorDone, stopRequested)
+	go p.waitForStartSuccess(ctx, runExited)
+
+	return nil
+}
+
+// recordRun publishes the state of a run that has just started, and returns its
+// PID. Everything here is read by the IPC path while the monitor writes it.
+func (p *Process) recordRun(cmd *exec.Cmd, monitorDone, stopRequested chan struct{}) int {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	p.cmd = cmd
 	p.pid = cmd.Process.Pid
 	p.startTime = time.Now()
@@ -225,24 +248,24 @@ func (p *Process) Start() error {
 	p.monitorDone = monitorDone
 	p.stopRequested = stopRequested
 	p.stoppedExternally = false
-	pid := p.pid
-	p.mu.Unlock()
+	return p.pid
+}
 
-	p.logger.Info("Started process", "pid", pid)
-
-	// Before the monitor: it tears the checker down when the process exits, and
-	// a process that exits straight away would otherwise leave one running.
-	p.startHealthChecks(ctx)
-
-	go p.monitor(ctx, cmd, monitorDone, stopRequested)
-	go p.waitForStartSuccess(ctx, cmd)
-
-	return nil
+// spawn starts the command through the reaper, which registers the PID before
+// it can exit. Starting it any other way would let a program that fails
+// immediately have its status collected with nobody yet listening for it.
+func (p *Process) spawn(cmd *exec.Cmd) (<-chan syscall.WaitStatus, error) {
+	return reaperFor(p.logger).spawn(func() (int, error) {
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		return cmd.Process.Pid, nil
+	})
 }
 
 // buildCommand assembles the exec.Cmd for a single run. A nil stdout or stderr
 // descriptor leaves the stream connected to /dev/null.
-func (p *Process) buildCommand(ctx context.Context, stdout, stderr *os.File) (*exec.Cmd, error) {
+func (p *Process) buildCommand(stdout, stderr *os.File) (*exec.Cmd, error) {
 	p.logger.Debug("Parsing command", "command", p.config.Command)
 	parts := parseCommand(p.config.Command)
 	if len(parts) == 0 {
@@ -250,19 +273,19 @@ func (p *Process) buildCommand(ctx context.Context, stdout, stderr *os.File) (*e
 	}
 
 	p.logger.Debug("Creating command", "command_parts", parts)
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) //nolint:gosec
+	// Deliberately not CommandContext: its context watcher is wired to Wait,
+	// which the reaper now owns, so it would never be released. Its Cancel hook
+	// would also fire against a PID that has already been reaped and may have
+	// been recycled by then, killing an unrelated process group. Stop signals
+	// the group explicitly, so nothing is lost.
+	//nolint:gosec,noctx // noctx wants CommandContext; see the comment above for why it cannot be used here
+	cmd := exec.Command(parts[0], parts[1:]...)
 
 	// Give the child its own process group, which everything it spawns
 	// inherits. Signaling the group is the only way to reach the workload
 	// behind a wrapper script: killing just the direct child leaves its
 	// children running and reparented to init.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	// The default cancellation kills the direct child only, which would leak
-	// the rest of the group.
-	cmd.Cancel = func() error {
-		return SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
-	}
 
 	if p.config.Directory != "" {
 		p.logger.Info("Setting working directory", "directory", p.config.Directory)
@@ -298,21 +321,23 @@ func processEnv(cfg *config.ProgramConfig) []string {
 
 // waitForStartSuccess promotes the process to RUNNING once it has stayed alive
 // for startsecs.
-func (p *Process) waitForStartSuccess(ctx context.Context, cmd *exec.Cmd) {
+func (p *Process) waitForStartSuccess(ctx context.Context, runExited <-chan struct{}) {
 	p.logger.Info("Waiting before checking start success", "seconds", p.config.StartSecs)
 
 	select {
 	case <-time.After(time.Duration(p.config.StartSecs) * time.Second):
 	case <-ctx.Done():
 		return
-	}
-
-	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+	case <-runExited:
+		// Observing the exit directly, rather than signaling the PID to see
+		// whether it answers: once the reaper has collected it the PID can be
+		// reused, and a probe would then report an unrelated process as ours.
 		if p.compareAndSetState(StateStarting, StateBackoff) {
 			p.logger.Info("Start check failed, setting state to BACKOFF")
 		}
 		return
 	}
+
 	if p.compareAndSetState(StateStarting, StateRunning) {
 		p.logger.Info("Start successful, setting state to RUNNING")
 	}
@@ -432,16 +457,34 @@ func (p *Process) Restart() error {
 }
 
 // monitor waits for the process to exit and applies the restart policy
-func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done, stopRequested chan struct{}) {
+func (p *Process) monitor(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	exited <-chan syscall.WaitStatus,
+	runExited, done, stopRequested chan struct{},
+) {
 	defer close(done)
 
-	err := cmd.Wait()
+	// The status comes from the reaper rather than cmd.Wait(): one waiter for
+	// the whole daemon is what keeps orphan reaping from stealing it.
+	status := <-exited
+	close(runExited)
+
+	// Read before releasing the handle below, which sets Process.Pid to -1.
+	pid := cmd.Process.Pid
 
 	// The process is reaped, but anything it spawned is still in its group and
 	// would survive as an orphan. Clear the group first: those grandchildren
 	// also hold the log pipe open, so removing them lets the drain finish
 	// instead of timing out.
-	p.killLingeringGroup(cmd.Process.Pid)
+	p.killLingeringGroup(pid)
+
+	// Nothing waited on the os.Process, so the handle Start allocated is still
+	// open. Releasing it closes the pidfd, which would otherwise leak one
+	// descriptor per run.
+	if err := cmd.Process.Release(); err != nil {
+		p.logger.Debug("Failed to release the process handle", "error", err)
+	}
 
 	// Probing a process that has exited would keep reporting on whatever else
 	// answers at that address until something stops the checker.
@@ -451,9 +494,9 @@ func (p *Process) monitor(ctx context.Context, cmd *exec.Cmd, done, stopRequeste
 	p.stopLogging()
 
 	p.mu.Lock()
-	p.exitCode = exitCodeOf(cmd, err)
+	p.exitCode = exitCodeOfStatus(status)
 	p.stopTime = time.Now()
-	p.lastError = err
+	p.lastError = exitErrorOf(status)
 	// A run that lasted long enough is treated as successful, so max_restarts
 	// bounds consecutive crashes rather than the lifetime restart count.
 	if p.stopTime.Sub(p.startTime) >= healthyUptime {
@@ -550,22 +593,18 @@ func backoffDuration(attempt int) time.Duration {
 	return min(time.Duration(1<<uint(shift))*time.Second, maxBackoffSeconds*time.Second)
 }
 
-// exitCodeOf resolves the exit code of a finished command
-func exitCodeOf(cmd *exec.Cmd, waitErr error) int {
-	if cmd.ProcessState != nil {
-		return cmd.ProcessState.ExitCode()
+// exitErrorOf describes a non-successful exit, and is nil for a clean one. It
+// stands in for the error cmd.Wait() used to return, which callers surface as
+// the program's last error.
+func exitErrorOf(status syscall.WaitStatus) error {
+	switch {
+	case status.Signaled():
+		return fmt.Errorf("signal: %s", status.Signal())
+	case status.ExitStatus() != 0:
+		return fmt.Errorf("exit status %d", status.ExitStatus())
+	default:
+		return nil
 	}
-	if waitErr == nil {
-		return 0
-	}
-
-	var exitError *exec.ExitError
-	if errors.As(waitErr, &exitError) {
-		if status, ok := exitError.Sys().(syscall.WaitStatus); ok {
-			return status.ExitStatus()
-		}
-	}
-	return -1
 }
 
 // startLogging creates this run's capture pipes and returns the descriptors to
