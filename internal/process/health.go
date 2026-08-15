@@ -240,9 +240,12 @@ func execProbe(cfg *config.ProgramConfig, logger *slog.Logger) probeFunc {
 		cmd.Stdout = writeEnd
 		cmd.Stderr = writeEnd
 
+		reaper := reaperFor(logger)
+
 		var pid int
-		exited, err := reaperFor(logger).spawn(func() (int, error) {
-			if startErr := cmd.Start(); startErr != nil {
+		exited, err := reaper.spawn(func() (int, error) {
+			startErr := cmd.Start()
+			if startErr != nil {
 				return 0, startErr
 			}
 			pid = cmd.Process.Pid
@@ -254,6 +257,17 @@ func execProbe(cfg *config.ProgramConfig, logger *slog.Logger) probeFunc {
 		if err != nil {
 			return err
 		}
+
+		// Nothing waits on this os.Process, so the handle Start allocated has to
+		// be given back by hand. A probe runs every interval for the life of the
+		// program, so leaking one pidfd per attempt exhausts the daemon's
+		// descriptors far quicker than the main process path would.
+		defer func() {
+			releaseErr := cmd.Process.Release()
+			if releaseErr != nil {
+				logger.Debug("Failed to release the probe handle", "error", releaseErr)
+			}
+		}()
 
 		output := make(chan []byte, 1)
 		go func() {
@@ -268,11 +282,15 @@ func execProbe(cfg *config.ProgramConfig, logger *slog.Logger) probeFunc {
 			if exitCodeOfStatus(status) == 0 {
 				return nil
 			}
-			return probeFailure(status, output)
+			return probeFailure(ctx, status, output)
 		case <-ctx.Done():
-			if pid > 0 {
-				//nolint:errcheck // the probe may already have exited on its own
-				_ = SignalGroup(pid, syscall.SIGKILL)
+			// Only while the reaper still holds it: once a PID has been
+			// collected the kernel may have handed it to something else, and
+			// kill(-pid) would land on a stranger. This is the same hazard that
+			// ruled out exec.CommandContext in buildCommand.
+			signalErr := reaper.signalGroupIfUnreaped(pid, syscall.SIGKILL)
+			if signalErr != nil {
+				logger.Debug("Failed to kill a timed-out probe", "error", signalErr)
 			}
 			return fmt.Errorf("health check timed out: %w", ctx.Err())
 		}
@@ -280,17 +298,25 @@ func execProbe(cfg *config.ProgramConfig, logger *slog.Logger) probeFunc {
 }
 
 // probeFailure describes a probe that exited non-zero, quoting its output when
-// it produced any. The wait is bounded because a probe that leaked a background
-// child leaves the pipe open behind it, and the checker must not be held.
-func probeFailure(status syscall.WaitStatus, output <-chan []byte) error {
+// it produced any.
+//
+// The wait is bounded twice over: a probe that leaked a background child leaves
+// the pipe open behind it, and the attempt's own deadline may pass while we are
+// waiting. Neither may hold the checker, which stopHealthChecks blocks on when
+// a program is stopping.
+func probeFailure(ctx context.Context, status syscall.WaitStatus, output <-chan []byte) error {
 	err := exitErrorOf(status)
+
+	timer := time.NewTimer(probeWaitDelay)
+	defer timer.Stop()
 
 	select {
 	case data := <-output:
 		if line := firstLine(data); line != "" {
 			return fmt.Errorf("%w: %s", err, line)
 		}
-	case <-time.After(probeWaitDelay):
+	case <-timer.C:
+	case <-ctx.Done():
 	}
 	return err
 }
