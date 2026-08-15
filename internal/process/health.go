@@ -3,10 +3,14 @@ package process
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ademidoff/supavisor/internal/config"
@@ -17,8 +21,9 @@ const (
 	// carried into the log line.
 	maxProbeOutputBytes = 200
 
-	// probeWaitDelay is how long an exec probe's descriptors stay open after it
-	// exits, so that a probe leaking a background child cannot hold the checker.
+	// probeWaitDelay bounds how long a failing probe's output is waited for
+	// after it exits, so that a probe leaking a background child, which holds
+	// the pipe open behind it, cannot hold the checker.
 	probeWaitDelay = time.Second
 )
 
@@ -91,7 +96,7 @@ func (p *Process) startHealthChecks(ctx context.Context) {
 		return
 	}
 
-	probe, err := newProbe(p.config)
+	probe, err := newProbe(p.config, p.logger)
 	if err != nil {
 		// Configuration validation rejects this, so reaching it means the
 		// program was built in code rather than parsed from a file.
@@ -184,12 +189,12 @@ func (p *Process) probeLoop(ctx context.Context, check *config.HealthCheck, prob
 }
 
 // newProbe builds the probe for a program's health check
-func newProbe(cfg *config.ProgramConfig) (probeFunc, error) {
+func newProbe(cfg *config.ProgramConfig, logger *slog.Logger) (probeFunc, error) {
 	check := cfg.HealthCheck
 
 	switch {
 	case check.Exec != "":
-		return execProbe(cfg), nil
+		return execProbe(cfg, logger), nil
 	case check.TCP != "":
 		return tcpProbe(check.TCP), nil
 	case check.HTTP != "":
@@ -202,27 +207,92 @@ func newProbe(cfg *config.ProgramConfig) (probeFunc, error) {
 // execProbe runs a command and treats a zero exit status as ready. It runs
 // where the program runs and with the program's environment, so that a check
 // like pg_isready sees the same settings the program was given.
-func execProbe(cfg *config.ProgramConfig) probeFunc {
+func execProbe(cfg *config.ProgramConfig, logger *slog.Logger) probeFunc {
 	return func(ctx context.Context) error {
 		parts := parseCommand(cfg.HealthCheck.Exec)
 		if len(parts) == 0 {
 			return fmt.Errorf("invalid health check command: %s", cfg.HealthCheck.Exec)
 		}
 
-		cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) //nolint:gosec
+		// Neither CommandContext nor CombinedOutput, because both of them wait
+		// for the child and the reaper is the only thing allowed to do that. A
+		// second waiter loses statuses, and a lost status here reads as a
+		// failed probe: a healthy program intermittently marked UNHEALTHY, and
+		// its dependents held back with it.
+		//nolint:gosec,noctx // see above; the context is honored below instead
+		cmd := exec.Command(parts[0], parts[1:]...)
 		cmd.Dir = cfg.Directory
 		cmd.Env = processEnv(cfg)
-		cmd.WaitDelay = probeWaitDelay
+		// Its own group, so a timed-out probe can be killed along with anything
+		// it spawned rather than just the command itself.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			return nil
+		readEnd, writeEnd, err := os.Pipe()
+		if err != nil {
+			return fmt.Errorf("failed to create probe pipe: %w", err)
 		}
-		if output := firstLine(out); output != "" {
-			return fmt.Errorf("%w: %s", err, output)
+		// Closing the read end unblocks the drain goroutine below, whatever
+		// happens to the probe itself.
+		defer func() { _ = readEnd.Close() }()
+
+		// An *os.File is handed to the child as-is. Any other writer makes
+		// os/exec start a copier that only Wait() can finish.
+		cmd.Stdout = writeEnd
+		cmd.Stderr = writeEnd
+
+		var pid int
+		exited, err := reaperFor(logger).spawn(func() (int, error) {
+			if startErr := cmd.Start(); startErr != nil {
+				return 0, startErr
+			}
+			pid = cmd.Process.Pid
+			return pid, nil
+		})
+		// The child holds its own copy now. Ours would keep the read below from
+		// ever reaching EOF.
+		_ = writeEnd.Close()
+		if err != nil {
+			return err
 		}
-		return err
+
+		output := make(chan []byte, 1)
+		go func() {
+			// A read error means the probe is gone or the pipe was closed under
+			// us; either way whatever arrived is all the output there is.
+			data, _ := io.ReadAll(readEnd) //nolint:errcheck
+			output <- data
+		}()
+
+		select {
+		case status := <-exited:
+			if exitCodeOfStatus(status) == 0 {
+				return nil
+			}
+			return probeFailure(status, output)
+		case <-ctx.Done():
+			if pid > 0 {
+				//nolint:errcheck // the probe may already have exited on its own
+				_ = SignalGroup(pid, syscall.SIGKILL)
+			}
+			return fmt.Errorf("health check timed out: %w", ctx.Err())
+		}
 	}
+}
+
+// probeFailure describes a probe that exited non-zero, quoting its output when
+// it produced any. The wait is bounded because a probe that leaked a background
+// child leaves the pipe open behind it, and the checker must not be held.
+func probeFailure(status syscall.WaitStatus, output <-chan []byte) error {
+	err := exitErrorOf(status)
+
+	select {
+	case data := <-output:
+		if line := firstLine(data); line != "" {
+			return fmt.Errorf("%w: %s", err, line)
+		}
+	case <-time.After(probeWaitDelay):
+	}
+	return err
 }
 
 // tcpProbe connects to an address and treats a completed connection as ready

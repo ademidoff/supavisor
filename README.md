@@ -26,6 +26,7 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 - [Reloading configuration](#reloading-configuration)
 - [Recovering from a crash](#recovering-from-a-crash)
 - [Process groups](#process-groups)
+- [Running as PID 1](#running-as-pid-1)
 - [Stopping processes](#stopping-processes)
   - [When a program needs `stopsignal: INT`](#when-a-program-needs-stopsignal-int)
   - [Checking whether a program handles its stop signal](#checking-whether-a-program-handles-its-stop-signal)
@@ -547,6 +548,34 @@ that backgrounds work and returns does not leak it.
 One consequence: because managed processes are in their own groups, `Ctrl+C` in a
 terminal running supavisor in the foreground reaches supavisor only. Supavisor
 then stops its processes itself, in its own order.
+
+## Running as PID 1
+
+Supavisor is safe to run as PID 1 in a container, with no `tini` or `dumb-init`
+in front of it.
+
+PID 1 inherits every orphan on the system. When a supervised program spawns a
+child and exits first, that child is reparented to PID 1, and when it eventually
+exits somebody has to call `wait()` for it or it stays a zombie forever. Nothing
+else will: its original parent is gone. A supervisor that only waits for its own
+children accumulates them for as long as the container runs.
+
+Supavisor therefore does all of its waiting in one place. A single reaper calls
+`wait4(-1)`, hands each status to whichever program owns that PID, and discards
+the rest, which is exactly the orphan case. It follows that nothing else may
+wait: `os/exec`'s own `Wait` is a second waiter, and two waiters race for the
+same statuses, so an exit code goes missing every so often and a program that
+exited cleanly looks like it crashed. That is the reason the process package
+never calls `cmd.Wait()`.
+
+None of this needs configuring, and it costs nothing when supavisor is not PID 1:
+with a real init above it, orphans reparent there instead and the reaper simply
+never sees them.
+
+Both halves of that are reproducible rather than asserted. `probes/pid1-zombies.sh`
+runs supavisor as PID 1 in a container and counts what it leaves behind, and
+`probes/wait4-race/main.go` demonstrates the exit codes that go missing if a second
+waiter is added. See `probes/README.md`.
 
 ## Stopping processes
 
