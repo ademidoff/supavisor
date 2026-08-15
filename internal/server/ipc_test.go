@@ -2,12 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,5 +188,69 @@ func TestLookupGroupID_AcceptsANumericGroup(t *testing.T) {
 func TestLookupGroupID_RejectsAnUnknownGroup(t *testing.T) {
 	if _, err := lookupGroupID("definitely-not-a-real-group"); err == nil {
 		t.Error("Expected an error for an unknown group")
+	}
+}
+
+// TestIPC_StopWhileConnectionsArrive is the regression test for a WaitGroup
+// misuse between the accept loop and Stop.
+//
+// The loop adds to the connection group for every client it accepts, while Stop
+// waits on that group. An Add that begins once the counter is zero and a Wait is
+// already running is not allowed, and the race detector reports it as a data
+// race. Closing the listener does not settle it on its own: an accept that has
+// already returned is still on its way to Add.
+//
+// The window is small, so this drives many stop cycles rather than one. Without
+// the fix it reports a race within a couple of runs; with it, not in hundreds.
+func TestIPC_StopWhileConnectionsArrive(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "sv-ipc-stop")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	ctx := t.Context()
+
+	for cycle := range 40 {
+		socket := filepath.Join(tmpDir, fmt.Sprintf("s%d.sock", cycle))
+		srv := &Server{
+			logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			processes: nil,
+		}
+		ipc := NewIPCServer(socket, "", srv)
+		if err := ipc.Start(); err != nil {
+			t.Fatalf("IPC Start failed: %v", err)
+		}
+
+		// Keep clients arriving, so an accept is in flight when Stop runs.
+		stopDialing := make(chan struct{})
+		var dialers sync.WaitGroup
+		for range 4 {
+			dialers.Go(func() {
+				var dialer net.Dialer
+				for {
+					select {
+					case <-stopDialing:
+						return
+					default:
+					}
+					conn, dialErr := dialer.DialContext(ctx, "unix", socket)
+					if dialErr == nil {
+						_ = conn.Close()
+					}
+				}
+			})
+		}
+
+		// Long enough for the first clients to be served and the counter to
+		// fall back to zero, which is the state an Add must not race.
+		time.Sleep(5 * time.Millisecond)
+
+		if err := ipc.Stop(); err != nil {
+			t.Errorf("Stop failed on cycle %d: %v", cycle, err)
+		}
+
+		close(stopDialing)
+		dialers.Wait()
 	}
 }
