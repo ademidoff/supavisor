@@ -76,6 +76,36 @@ func reaperFor(logger *slog.Logger) *childReaper {
 // spawn starts a child and registers it in one step, so an exit cannot be
 // reaped before we know who it belongs to. start does the fork, and returns the
 // PID it produced.
+//
+// # Why the lock spans the whole fork, and what it costs
+//
+// wait4 is destructive: it reports which child exited only by collecting it. So
+// a status for a PID nobody has registered cannot be set aside for a moment and
+// identified later, and it cannot be left uncollected either. Excluding
+// reaping for the duration of the fork is what makes registration and
+// collection mutually exclusive.
+//
+// The cost is real and known: a start wedged in exec, on a hung mount or
+// anything else that blocks in the loader, stalls exit delivery for every other
+// program until it returns. The exposure is a stalled daemon, which the
+// reconciler and an operator can both see.
+//
+// The obvious way to avoid that is to drop the barrier and hold statuses for
+// unregistered PIDs while any start is in flight, letting each start claim its
+// own on the way past. It does not work, and the failure is worse than the
+// stall: an in-flight count is global, so it cannot say that a given PID
+// belongs to a start. As PID 1 every orphan exits into that holding area, and
+// collecting one frees its PID for reuse. A later start handed the same number
+// takes the orphan's status, reports a running program as exited, kills its
+// process group and then tracks nothing. A time bound narrows that window; it
+// does not close it. This was tried in #22 and withdrawn.
+//
+// Closing it properly needs a non-destructive look at what has exited —
+// waitid(P_ALL, WEXITED|WNOHANG|WNOWAIT), which names the PID and leaves the
+// zombie in place. Go does not expose it: x/sys's Siginfo stops at Signo, Errno
+// and Code with the union left as opaque bytes, so si_pid cannot be read, and
+// the standard library has no Waitid at all. It would mean laying out the
+// siginfo ABI by hand, in this file. Worth revisiting if that changes.
 func (r *childReaper) spawn(start func() (int, error)) (<-chan syscall.WaitStatus, error) {
 	// Read-held across the fork: reapAll takes it exclusively, so it cannot
 	// collect a status for a PID that is still being registered, while other
@@ -119,7 +149,8 @@ func (r *childReaper) run() {
 // whoever started it. It drains rather than taking one, because signals
 // coalesce and several children can exit between two notifications.
 func (r *childReaper) reapAll() {
-	// No fork may be in flight while statuses are being collected.
+	// No fork may be in flight while statuses are being collected. See spawn
+	// for why this has to cover the whole fork, and what it costs.
 	r.forking.Lock()
 	defer r.forking.Unlock()
 
