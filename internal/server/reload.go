@@ -7,48 +7,53 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/ademidoff/supavisor/internal/api"
 	"github.com/ademidoff/supavisor/internal/config"
 	"github.com/ademidoff/supavisor/internal/dependency"
 	"github.com/ademidoff/supavisor/internal/process"
 )
 
-// Reload re-reads the configuration files and applies what changed.
+// Reload re-reads the configuration files and applies what changed, and reports
+// what it applied.
 //
 // Programs that are unchanged keep running untouched. Programs that were
 // removed are stopped and forgotten, programs that were added are picked up by
 // the reconciler, and programs whose definition changed are stopped and
 // replaced so they come back on the new definition.
-func (s *Server) Reload() error {
+func (s *Server) Reload() (api.ReloadResponse, error) {
 	// One reload at a time: two of them interleaving would compute their plans
 	// against the same starting point and then apply both.
 	s.reloadMutex.Lock()
 	defer s.reloadMutex.Unlock()
 
+	var none api.ReloadResponse
+
 	if s.config.SourcePath == "" {
-		return fmt.Errorf("no configuration file to reload")
+		return none, fmt.Errorf("no configuration file to reload")
 	}
 
 	newCfg, err := config.ParseConfig(s.config.SourcePath)
 	if err != nil {
-		return fmt.Errorf("failed to reload configuration: %w", err)
+		return none, fmt.Errorf("failed to reload configuration: %w", err)
 	}
 	if err := newCfg.Validate(); err != nil {
-		return fmt.Errorf("invalid configuration: %w", err)
+		return none, fmt.Errorf("invalid configuration: %w", err)
 	}
 	if _, err := buildDependencyGraph(newCfg).TopologicalSort(); err != nil {
-		return fmt.Errorf("dependency graph validation failed: %w", err)
+		return none, fmt.Errorf("dependency graph validation failed: %w", err)
 	}
 	if setting := changedDaemonSetting(&s.config.Supavisor, &newCfg.Supavisor); setting != "" {
-		return fmt.Errorf("%s cannot be changed while running: restart supavisor to apply it", setting)
+		return none, fmt.Errorf("%s cannot be changed while running: restart supavisor to apply it", setting)
 	}
 	if err := newCfg.EnsureLogDirectories(); err != nil {
-		return fmt.Errorf("failed to create log directories: %w", err)
+		return none, fmt.Errorf("failed to create log directories: %w", err)
 	}
 
 	added, removed, changed := diffPrograms(s.config.Programs, newCfg.Programs)
-	if len(added)+len(removed)+len(changed) == 0 {
+	applied := api.ReloadResponse{Added: added, Removed: removed, Changed: changed}
+	if applied.Empty() {
 		s.logger.Info("Configuration reloaded, nothing changed")
-		return nil
+		return applied, nil
 	}
 	s.logger.Info("Reloading configuration", "added", added, "removed", removed, "changed", changed)
 
@@ -70,7 +75,7 @@ func (s *Server) Reload() error {
 	s.markStateDirty()
 
 	s.logger.Info("Configuration reloaded")
-	return nil
+	return applied, nil
 }
 
 // stopForReload stops programs that reload is about to drop or replace

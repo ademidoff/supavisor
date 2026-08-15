@@ -436,7 +436,8 @@ func (s *Server) handleSignals(sigChan chan os.Signal) {
 		switch sig {
 		case syscall.SIGHUP:
 			s.logger.Info("Received SIGHUP, reloading configuration")
-			if err := s.Reload(); err != nil {
+			_, err := s.Reload()
+			if err != nil {
 				s.logger.Error("failed to reload configuration", "error", err)
 			}
 

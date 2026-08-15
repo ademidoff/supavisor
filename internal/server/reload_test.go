@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,8 +74,18 @@ programs:
     command: /bin/sleep 60
     startsecs: 1
 `)
-	if err := sv.Reload(); err != nil {
+	applied, err := sv.Reload()
+	if err != nil {
 		t.Fatalf("Reload failed: %v", err)
+	}
+	if !slices.Equal(applied.Added, []string{"brandnew"}) {
+		t.Errorf("Reload should report what it added, got %v", applied.Added)
+	}
+	if !slices.Equal(applied.Removed, []string{"goaway"}) {
+		t.Errorf("Reload should report what it removed, got %v", applied.Removed)
+	}
+	if len(applied.Changed) != 0 {
+		t.Errorf("Nothing was redefined, got changed %v", applied.Changed)
 	}
 
 	if sv.process("goaway") != nil {
@@ -115,8 +126,12 @@ programs:
     command: /bin/sleep 120
     startsecs: 1
 `)
-	if err := sv.Reload(); err != nil {
+	applied, err := sv.Reload()
+	if err != nil {
 		t.Fatalf("Reload failed: %v", err)
+	}
+	if !slices.Equal(applied.Changed, []string{"app"}) {
+		t.Errorf("Reload should report the redefined program, got %v", applied.Changed)
 	}
 	waitForState(t, sv, "app", process.StateRunning, 10*time.Second)
 
@@ -153,7 +168,7 @@ programs:
     command: /bin/sleep 120
     startsecs: 1
 `)
-	if err := sv.Reload(); err != nil {
+	if _, err := sv.Reload(); err != nil {
 		t.Fatalf("Reload failed: %v", err)
 	}
 
@@ -182,7 +197,7 @@ programs:
     command: /bin/sleep 60
     thisKeyIsNonsense: true
 `)
-	if err := sv.Reload(); err == nil {
+	if _, err := sv.Reload(); err == nil {
 		t.Fatal("Expected a broken config to be refused")
 	}
 
@@ -211,7 +226,7 @@ programs:
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	err := sv.Reload()
+	_, err := sv.Reload()
 	if err == nil {
 		t.Fatal("Expected a changed socket to be refused")
 	}
@@ -235,8 +250,12 @@ programs:
 	waitForState(t, sv, "app", process.StateRunning, 10*time.Second)
 	before := sv.process("app").GetPID()
 
-	if err := sv.Reload(); err != nil {
+	applied, err := sv.Reload()
+	if err != nil {
 		t.Fatalf("Reload failed: %v", err)
+	}
+	if !applied.Empty() {
+		t.Errorf("Reload with no changes should report nothing, got %+v", applied)
 	}
 	if after := sv.process("app").GetPID(); after != before {
 		t.Errorf("Reload with no changes restarted the program: pid %d -> %d", before, after)

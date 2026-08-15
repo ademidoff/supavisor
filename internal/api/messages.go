@@ -45,3 +45,18 @@ type ProcessStatus struct {
 type StatusResponse struct {
 	Processes []ProcessStatus `json:"processes"`
 }
+
+// ReloadResponse reports what a reload did. A caller driving supavisor over the
+// socket needs this to tell an applied change from a no-op, and a program that
+// reloads its own supervisor needs it to know whether it was in Changed and is
+// therefore about to be stopped and replaced.
+type ReloadResponse struct {
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
+	Changed []string `json:"changed,omitempty"`
+}
+
+// Empty reports whether the reload left every program alone.
+func (r ReloadResponse) Empty() bool {
+	return len(r.Added) == 0 && len(r.Removed) == 0 && len(r.Changed) == 0
+}
