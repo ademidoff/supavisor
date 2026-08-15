@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -136,5 +137,52 @@ func TestExitErrorOf(t *testing.T) {
 				t.Errorf("Got %v, want %s", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestReaper_AStuckStartDoesNotBlockReaping is the regression test for holding
+// a lock across a fork.
+//
+// A start that wedges in exec — a binary on a hung mount, say — used to stall
+// every other program's start and all exit delivery with it, because reaping
+// had to wait for the fork to finish. Nothing is held across the fork now, so
+// a stuck start is only stuck for itself.
+func TestReaper_AStuckStartDoesNotBlockReaping(t *testing.T) {
+	r := testReaper(t)
+
+	forking := make(chan struct{})
+	release := make(chan struct{})
+	stuck := make(chan struct{})
+
+	go func() {
+		defer close(stuck)
+		_, _ = r.spawn(func() (int, error) {
+			close(forking)
+			// A fork that never returns.
+			<-release
+			return 0, errors.New("abandoned")
+		})
+	}()
+
+	<-forking
+	defer func() {
+		close(release)
+		<-stuck
+	}()
+
+	// A real child exits while that start is still wedged. Its status has to
+	// arrive regardless.
+	exited, err := spawnExit(r, 5)
+	if err != nil {
+		t.Fatalf("spawn failed while another start was stuck: %v", err)
+	}
+
+	select {
+	case status := <-exited:
+		if got := exitCodeOfStatus(status); got != 5 {
+			t.Errorf("exit code = %d, want 5", got)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("A start stuck in fork blocked exit delivery for everything else")
 	}
 }

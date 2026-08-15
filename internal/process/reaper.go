@@ -10,11 +10,19 @@ import (
 	"time"
 )
 
-// reapBackstop bounds how long an exit can go unnoticed if a SIGCHLD is missed.
-// Signals coalesce, so several children exiting at once can produce one
-// notification; the reap loop drains everything it can each time, and this only
-// covers the case where a signal is lost entirely.
-const reapBackstop = time.Second
+const (
+	// reapBackstop bounds how long an exit can go unnoticed if a SIGCHLD is
+	// missed. Signals coalesce, so several children exiting at once can produce
+	// one notification; the reap loop drains everything it can each time, and
+	// this only covers the case where a signal is lost entirely.
+	reapBackstop = time.Second
+
+	// pendingTTL bounds how long a status collected for an unregistered PID is
+	// held for a start that might still claim it. Registration follows the fork
+	// within a few instructions, so anything older than this belonged to an
+	// orphan that happened to exit while a start was in flight.
+	pendingTTL = 5 * time.Second
+)
 
 var (
 	reaperOnce sync.Once
@@ -35,16 +43,26 @@ type childReaper struct {
 	logger  *slog.Logger
 	waiters map[int]chan syscall.WaitStatus
 
-	// forking excludes reaping, so a status cannot be collected for a PID that
-	// a start has not registered yet. It is read-held across the fork, which
-	// lets starts run in parallel with each other: holding one exclusive lock
-	// across every fork made a slow exec stall every other program's start and
-	// all exit delivery with it.
-	forking sync.RWMutex
+	// pending holds statuses collected for PIDs nobody had registered yet,
+	// which happens when a child exits in the moment between its fork
+	// returning and the start recording it. Only kept while a start is in
+	// flight, so an orphan is still dropped immediately in the ordinary case.
+	pending map[int]pendingExit
 
-	// mu guards waiters alone, and is never held across a fork or a syscall
-	// that can block.
+	// inFlight counts starts between their fork and their registration. It is
+	// what tells an unclaimed status apart from an orphan.
+	inFlight int
+
+	// mu guards everything above, and is never held across a fork or any other
+	// call that can block: a start that wedges in exec must not be able to stop
+	// the daemon reaping.
 	mu sync.Mutex
+}
+
+// pendingExit is a status waiting for the start that will claim it
+type pendingExit struct {
+	seen   time.Time
+	status syscall.WaitStatus
 }
 
 // StartReaping starts the daemon's reaper. Call it once, from daemon startup,
@@ -67,6 +85,7 @@ func reaperFor(logger *slog.Logger) *childReaper {
 		reaper = &childReaper{
 			logger:  logger.With("component", "reaper"),
 			waiters: make(map[int]chan syscall.WaitStatus),
+			pending: make(map[int]pendingExit),
 		}
 		go reaper.run()
 	})
@@ -77,13 +96,20 @@ func reaperFor(logger *slog.Logger) *childReaper {
 // reaped before we know who it belongs to. start does the fork, and returns the
 // PID it produced.
 func (r *childReaper) spawn(start func() (int, error)) (<-chan syscall.WaitStatus, error) {
-	// Read-held across the fork: reapAll takes it exclusively, so it cannot
-	// collect a status for a PID that is still being registered, while other
-	// starts are free to proceed alongside this one.
-	r.forking.RLock()
-	defer r.forking.RUnlock()
+	// Declared before the fork rather than locked across it. A lock held while
+	// forking would let one start stuck in exec block every other start and all
+	// exit delivery behind it; this only tells the reaper that a status for an
+	// unfamiliar PID may belong to a start that has not finished registering.
+	r.mu.Lock()
+	r.inFlight++
+	r.mu.Unlock()
 
 	pid, err := start()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inFlight--
+
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +117,15 @@ func (r *childReaper) spawn(start func() (int, error)) (<-chan syscall.WaitStatu
 	// Buffered so the reaper never blocks on a caller that is not listening yet.
 	exited := make(chan syscall.WaitStatus, 1)
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// The child may have run, exited and been collected while the fork was
+	// still returning, in which case its status is already waiting here.
+	if held, ok := r.pending[pid]; ok {
+		delete(r.pending, pid)
+		exited <- held.status
+		close(exited)
+		return exited, nil
+	}
+
 	r.waiters[pid] = exited
 	return exited, nil
 }
@@ -119,10 +152,6 @@ func (r *childReaper) run() {
 // whoever started it. It drains rather than taking one, because signals
 // coalesce and several children can exit between two notifications.
 func (r *childReaper) reapAll() {
-	// No fork may be in flight while statuses are being collected.
-	r.forking.Lock()
-	defer r.forking.Unlock()
-
 	for {
 		var status syscall.WaitStatus
 		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
@@ -134,21 +163,46 @@ func (r *childReaper) reapAll() {
 			return
 		}
 
-		r.mu.Lock()
-		exited := r.waiters[pid]
-		delete(r.waiters, pid)
-		r.mu.Unlock()
-
-		if exited == nil {
+		exited, held := r.claim(pid, status)
+		switch {
+		case exited != nil:
+			exited <- status
+			close(exited)
+		case held:
+			r.logger.Debug("Holding a status for a start still in flight", "pid", pid)
+		default:
 			// Nobody started this: an orphan reparented to us because we are
 			// PID 1. Reaping it is the whole point; there is no one to tell.
 			r.logger.Debug("Reaped an orphan", "pid", pid)
-			continue
 		}
-
-		exited <- status
-		close(exited)
 	}
+}
+
+// claim hands a collected status to whoever registered that PID. When nobody
+// has, it reports whether the status was held for a start that is still in
+// flight, rather than dropped as an orphan.
+func (r *childReaper) claim(pid int, status syscall.WaitStatus) (chan syscall.WaitStatus, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if exited, ok := r.waiters[pid]; ok {
+		delete(r.waiters, pid)
+		return exited, false
+	}
+
+	// Anything left over from a start that never claimed it, so the map cannot
+	// grow and a stale entry cannot be handed to a later child.
+	for held, entry := range r.pending {
+		if time.Since(entry.seen) > pendingTTL {
+			delete(r.pending, held)
+		}
+	}
+
+	if r.inFlight == 0 {
+		return nil, false
+	}
+	r.pending[pid] = pendingExit{status: status, seen: time.Now()}
+	return nil, true
 }
 
 // signalGroupIfUnreaped signals pid's process group, but only while the reaper
