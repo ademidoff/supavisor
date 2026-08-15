@@ -18,6 +18,12 @@ import (
 const (
 	tabPadding = 3
 
+	// Output formats. The table is for people and its columns are a
+	// presentation choice; json is the payload the daemon actually sent, for
+	// anything reading sctl rather than looking at it.
+	outputTable = "table"
+	outputJSON  = "json"
+
 	// States a program has a live PID in, and the placeholders used when a
 	// column has nothing to report
 	stateRunning  = "RUNNING"
@@ -37,9 +43,12 @@ const (
 
 func main() {
 	var socketPath string
+	var output string
 	var showVersion bool
 	flag.StringVar(&socketPath, "s", "/tmp/supavisor.sock", "Path to supavisor socket")
 	flag.StringVar(&socketPath, "socket", "/tmp/supavisor.sock", "Path to supavisor socket")
+	flag.StringVar(&output, "o", outputTable, "Output format: table or json")
+	flag.StringVar(&output, "output", outputTable, "Output format: table or json")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 	flag.Usage = printUsage
 	flag.Parse()
@@ -47,6 +56,11 @@ func main() {
 	if showVersion {
 		fmt.Println(version.String("sctl"))
 		return
+	}
+
+	if output != outputTable && output != outputJSON {
+		fmt.Fprintf(os.Stderr, "Error: unknown output format: %s (must be %s or %s)\n", output, outputTable, outputJSON)
+		os.Exit(1)
 	}
 
 	if flag.NArg() == 0 {
@@ -74,6 +88,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// JSON reports what the daemon sent, whether or not the command succeeded,
+	// so a caller reading sctl never has to scrape stderr to find out what went
+	// wrong. The exit code still carries the outcome.
+	if output == outputJSON {
+		if err := printJSON(*resp); err != nil {
+			fmt.Fprintf(os.Stderr, "Fatal: %v\n", err)
+			os.Exit(1)
+		}
+		if !resp.Success {
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Handle response
 	if !resp.Success {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
@@ -95,6 +123,18 @@ func main() {
 	default:
 		fmt.Println(resp.Message)
 	}
+}
+
+// printJSON writes the daemon's response as indented JSON. It is the response
+// itself rather than a shape invented here, so the field names are the ones the
+// protocol already defines and they are the same for every command.
+func printJSON(resp api.Response) error {
+	encoded, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to render the response as JSON: %w", err)
+	}
+	fmt.Println(string(encoded))
+	return nil
 }
 
 // printReload reports what the reload applied. Each category is named only when
@@ -315,5 +355,6 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Options (must precede the command):")
 	fmt.Println("  -s, -socket PATH    Path to supavisor socket (default: /tmp/supavisor.sock)")
+	fmt.Println("  -o, -output FORMAT  Output format: table (default) or json")
 	fmt.Println("  -version            Print version information and exit")
 }

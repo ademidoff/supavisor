@@ -14,6 +14,7 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 - [Command-Line Options](#command-line-options)
   - [supavisor](#supavisor-1)
   - [sctl](#sctl)
+  - [Machine-readable output](#machine-readable-output)
 - [Configuration](#configuration)
   - [Multi-file configuration](#multi-file-configuration)
   - [Configuration is strict](#configuration-is-strict)
@@ -218,6 +219,7 @@ works, `sctl status -s /run/supavisor.sock` is rejected.
 
 Options:
 - `-s, -socket <path>`: Path to supavisor socket (default: `/tmp/supavisor.sock`)
+- `-o, -output <format>`: `table` (default) or `json`, see [Machine-readable output](#machine-readable-output)
 - `-version`: Print version, commit and build date, then exit
 
 Access to the socket is access to the daemon: it can stop supervised processes,
@@ -232,6 +234,61 @@ Commands:
 - `restart <name>`: Restart a specific process
 - `reload`: Re-read the configuration and apply what changed
 - `shutdown`: Shutdown supavisor daemon
+
+### Machine-readable output
+
+The table is for people. Its aligned columns, the `N/A` it prints for numbers
+that mean nothing yet and the `-` it prints for absent health are presentation
+choices, and they are not a stable interface. `-o json` prints the response the
+daemon actually sent:
+
+```bash
+$ sctl -o json status
+{
+  "data": {
+    "processes": [
+      {
+        "desired": "RUNNING",
+        "exit_code": 0,
+        "health": "HEALTHY",
+        "name": "db",
+        "pid": 4211,
+        "restart_count": 0,
+        "state": "RUNNING",
+        "uptime": "2m 10s"
+      }
+    ]
+  },
+  "success": true
+}
+```
+
+The shape is the same for every command, so `data` carries the processes for
+`status` and the applied diff for `reload`, and the envelope is printed whether
+or not the command succeeded. A failure is reported as JSON rather than on
+stderr, with the exit code still carrying the outcome:
+
+```bash
+$ sctl -o json start nosuchprog
+{
+  "message": "process nosuchprog not found",
+  "success": false
+}
+$ echo $?
+1
+```
+
+`sctl -o json status <name>` keeps the same envelope as the whole-list form, with
+one entry in `processes`, so parsing does not depend on how the command was
+invoked.
+
+Two things to read carefully, because the table hides them behind placeholders:
+
+- **`pid` is whatever the daemon last knew.** For a program that is not running
+  it is the PID of the run that ended, where the table prints `N/A`. Read it
+  together with `state`.
+- **`health` is `NONE` when no probe is configured**, which the table shows as
+  `-`. It does not mean unhealthy.
 
 ## Configuration
 
