@@ -722,6 +722,68 @@ Notes:
   can absorb will eventually block on write, and a process that outlives a
   supavisor crash will see its output descriptor close.
 
+## Best practices
+
+### One-off programs should not have dependents
+
+A one-off program — one that does a piece of work and exits, such as a migration, a
+bootstrap script or an init playbook — is a perfectly good thing to supervise. With
+the default `autorestart: unexpected` it runs once, settles in `EXITED` and is left
+there, while a non-zero exit is retried and eventually reaches `FATAL`, so a failure
+is still visible in `sctl status` rather than passing silently.
+
+What a one-off should not be is the subject of another program's `depends_on`.
+
+`condition: started` is satisfied while the dependency is `RUNNING`, and a one-off is
+`RUNNING` only for as long as its work takes. A dependent either starts inside that
+window — concurrently with the task it was meant to follow, not after it — or, if it
+comes to be started after the work has finished, does not start at all. The
+dependency has exited and will never come up again, so `sctl start` refuses it and
+says which program is responsible, and the reconcile loop leaves it `STOPPED`.
+
+The second case is the one that hurts, because it surfaces long after the
+configuration was written and looks nothing like a configuration problem. A
+dependent that crashes and is restarted an hour after the one-off completed cannot
+come back.
+
+`condition: healthy` does not rescue it. Probes belong to a run, so a one-off's
+health returns to `-` when it exits; unless a probe happened to pass while the
+process was still alive, the dependent is waiting for a state that can no longer
+occur. Whether it does is a matter of timing between the check interval and the
+exit, which is not something to build on.
+
+So leave one-offs out of the graph. Start them early with `priority` and let the
+programs that care about the result gate on something long-lived instead:
+
+```yaml
+programs:
+  # Runs once and exits. Nothing lists it in depends_on.
+  migrate:
+    command: /usr/bin/migrate --up
+    autorestart: unexpected
+    priority: 1
+
+  db:
+    command: /usr/bin/postgres
+    priority: 5
+    health_check:
+      exec: pg_isready -q
+
+  api:
+    command: /usr/bin/api
+    priority: 10
+    depends_on:
+      db:
+        condition: healthy
+```
+
+Note that `priority` orders the launch of programs that are ready to start; it does
+not wait for one to finish. There is currently no condition meaning "has completed
+successfully", so when a dependent genuinely must not run until the work is done,
+that ordering has to be expressed some other way: as a readiness check on the
+long-lived service that consumes the result, or by doing the work in the dependent's
+own startup path.
+
 ## Examples
 
 ### Basic Process
