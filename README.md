@@ -572,6 +572,11 @@ None of this needs configuring, and it costs nothing when supavisor is not PID 1
 with a real init above it, orphans reparent there instead and the reaper simply
 never sees them.
 
+Both halves of that are reproducible rather than asserted. `probes/pid1-zombies.sh`
+runs supavisor as PID 1 in a container and counts what it leaves behind, and
+`probes/wait4-race/main.go` demonstrates the exit codes that go missing if a second
+waiter is added. See `probes/README.md`.
+
 ## Stopping processes
 
 `sctl stop`, `sctl restart` and daemon shutdown all follow the same sequence:
