@@ -16,24 +16,22 @@ func testReaper(t *testing.T) *childReaper {
 	return reaperFor(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-// spawnExit starts a child that exits with the given code, through the reaper
-func spawnExit(t *testing.T, r *childReaper, code int) <-chan syscall.WaitStatus {
-	t.Helper()
-
+// spawnExit starts a child that exits with the given code, through the reaper.
+//
+// It returns the error rather than calling t.Fatalf, because it is called from
+// goroutines other than the test's own, where Fatalf is not allowed.
+func spawnExit(r *childReaper, code int) (<-chan syscall.WaitStatus, error) {
 	//nolint:noctx // the reaper owns the wait; a context-bound command would fight it
 	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("exit %d", code))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	exited, err := r.spawn(func() (int, error) {
-		if err := cmd.Start(); err != nil {
-			return 0, err
+	return r.spawn(func() (int, error) {
+		startErr := cmd.Start()
+		if startErr != nil {
+			return 0, startErr
 		}
 		return cmd.Process.Pid, nil
 	})
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-	return exited
 }
 
 // TestReaper_DeliversEachStatusToItsOwner is the regression test for the reason
@@ -52,7 +50,11 @@ func TestReaper_DeliversEachStatusToItsOwner(t *testing.T) {
 		// visible rather than coincidentally correct.
 		want := i%7 + 1
 		wg.Go(func() {
-			exited := spawnExit(t, r, want)
+			exited, err := spawnExit(r, want)
+			if err != nil {
+				wrong <- fmt.Sprintf("spawn failed: %v", err)
+				return
+			}
 			select {
 			case status := <-exited:
 				if got := exitCodeOfStatus(status); got != want {
@@ -81,8 +83,9 @@ func TestReaper_ReportsAKilledProcess(t *testing.T) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	exited, err := r.spawn(func() (int, error) {
-		if err := cmd.Start(); err != nil {
-			return 0, err
+		startErr := cmd.Start()
+		if startErr != nil {
+			return 0, startErr
 		}
 		return cmd.Process.Pid, nil
 	})
@@ -98,8 +101,10 @@ func TestReaper_ReportsAKilledProcess(t *testing.T) {
 		if !status.Signaled() {
 			t.Errorf("Expected a signaled status, got %v", status)
 		}
-		if got, want := exitCodeOfStatus(status), 128+int(syscall.SIGKILL); got != want {
-			t.Errorf("exit code = %d, want %d", got, want)
+		// -1 for a signaled process, matching os.ProcessState.ExitCode and
+		// therefore the exit_code field the status API has always reported.
+		if got := exitCodeOfStatus(status); got != exitCodeSignalled {
+			t.Errorf("exit code = %d, want %d", got, exitCodeSignalled)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Timed out waiting for the kill to be reported")

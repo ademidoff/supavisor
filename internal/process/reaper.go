@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -33,14 +34,34 @@ var (
 type childReaper struct {
 	logger  *slog.Logger
 	waiters map[int]chan syscall.WaitStatus
-	mu      sync.Mutex
+
+	// forking excludes reaping, so a status cannot be collected for a PID that
+	// a start has not registered yet. It is read-held across the fork, which
+	// lets starts run in parallel with each other: holding one exclusive lock
+	// across every fork made a slow exec stall every other program's start and
+	// all exit delivery with it.
+	forking sync.RWMutex
+
+	// mu guards waiters alone, and is never held across a fork or a syscall
+	// that can block.
+	mu sync.Mutex
 }
 
-// reaperFor returns the daemon's reaper, starting it on first use.
+// StartReaping starts the daemon's reaper. Call it once, from daemon startup,
+// with the root logger.
 //
-// It is started lazily rather than wired in explicitly because there can only
-// ever be one, and because a supervisor that forgot to start it would hang
-// waiting for exits that never arrive.
+// Doing it here rather than on the first fork is what makes the PID 1 guarantee
+// unconditional: a container whose programs are all autostart: false, or one
+// still working through dependencies, would otherwise have no wait4 loop at all
+// and would accumulate any orphan reparented onto it in the meantime.
+func StartReaping(logger *slog.Logger) {
+	reaperFor(logger)
+}
+
+// reaperFor returns the daemon's reaper, starting it if StartReaping has not
+// run. The fallback keeps a Process usable on its own, in tests and anywhere
+// else that builds one directly, at the cost of the reaper inheriting that
+// caller's logger.
 func reaperFor(logger *slog.Logger) *childReaper {
 	reaperOnce.Do(func() {
 		reaper = &childReaper{
@@ -56,10 +77,11 @@ func reaperFor(logger *slog.Logger) *childReaper {
 // reaped before we know who it belongs to. start does the fork, and returns the
 // PID it produced.
 func (r *childReaper) spawn(start func() (int, error)) (<-chan syscall.WaitStatus, error) {
-	// Held across the fork: the reap loop takes the same lock before wait4, so
-	// it cannot collect a status for a PID that is still being registered.
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Read-held across the fork: reapAll takes it exclusively, so it cannot
+	// collect a status for a PID that is still being registered, while other
+	// starts are free to proceed alongside this one.
+	r.forking.RLock()
+	defer r.forking.RUnlock()
 
 	pid, err := start()
 	if err != nil {
@@ -68,6 +90,9 @@ func (r *childReaper) spawn(start func() (int, error)) (<-chan syscall.WaitStatu
 
 	// Buffered so the reaper never blocks on a caller that is not listening yet.
 	exited := make(chan syscall.WaitStatus, 1)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.waiters[pid] = exited
 	return exited, nil
 }
@@ -94,20 +119,22 @@ func (r *childReaper) run() {
 // whoever started it. It drains rather than taking one, because signals
 // coalesce and several children can exit between two notifications.
 func (r *childReaper) reapAll() {
-	for {
-		r.mu.Lock()
+	// No fork may be in flight while statuses are being collected.
+	r.forking.Lock()
+	defer r.forking.Unlock()
 
+	for {
 		var status syscall.WaitStatus
 		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
 		if pid <= 0 {
 			// 0: children exist, none have exited. ECHILD: none at all.
-			r.mu.Unlock()
-			if err != nil && err != syscall.ECHILD {
+			if err != nil && !errors.Is(err, syscall.ECHILD) {
 				r.logger.Debug("wait4 failed", "error", err)
 			}
 			return
 		}
 
+		r.mu.Lock()
 		exited := r.waiters[pid]
 		delete(r.waiters, pid)
 		r.mu.Unlock()
@@ -124,14 +151,39 @@ func (r *childReaper) reapAll() {
 	}
 }
 
-// signalExitBase is the shell convention for reporting a process that was
-// killed rather than exiting on its own: 128 plus the signal number.
-const signalExitBase = 128
+// signalGroupIfUnreaped signals pid's process group, but only while the reaper
+// still holds that PID. Once wait4 has collected it the kernel is free to hand
+// the number to something else, and kill(-pid) would then reach an unrelated
+// process group. Held under the same lock reapAll uses to drop the waiter, so
+// the check cannot go stale between here and the signal.
+func (r *childReaper) signalGroupIfUnreaped(pid int, sig syscall.Signal) error {
+	if pid <= 0 {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, waiting := r.waiters[pid]; !waiting {
+		return nil
+	}
+	return SignalGroup(pid, sig)
+}
+
+// exitCodeSignalled is what a process killed by a signal reports, matching
+// os.ProcessState.ExitCode.
+const exitCodeSignalled = -1
 
 // exitCodeOfStatus reports the exit code a wait status carries.
+//
+// A signaled process reports -1 rather than 128+signal. That is what
+// os.ProcessState.ExitCode gives, which is what this used to be built on, and
+// it reaches operators through the exit_code field of the status API. The shell
+// convention would be more informative, but changing a documented field is a
+// deliberate act rather than a side effect of moving where the status is read.
 func exitCodeOfStatus(status syscall.WaitStatus) int {
 	if status.Signaled() {
-		return signalExitBase + int(status.Signal())
+		return exitCodeSignalled
 	}
 	return status.ExitStatus()
 }
