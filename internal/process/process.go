@@ -35,6 +35,11 @@ const (
 	// yields a zero backoff, turning the restart policy into a tight loop.
 	maxBackoffShift = 5
 
+	// reapGrace bounds the wait for a monitor to report an exit after SIGKILL.
+	// A process in an uninterruptible wait does not die on SIGKILL, and one
+	// program in that state must not be able to hold up the daemon's shutdown.
+	reapGrace = 5 * time.Second
+
 	// healthyUptime is how long a process must stay up for the run to count as
 	// successful. Reaching it resets the consecutive-restart counter so that
 	// max_restarts bounds crash loops rather than restarts over the whole
@@ -404,8 +409,18 @@ func (p *Process) Stop() error {
 				if err := SignalGroup(pid, syscall.SIGKILL); err != nil {
 					p.logger.Warn("Failed to send SIGKILL", "error", err)
 				}
-				<-monitorDone
-				p.logger.Info("Force killed")
+
+				// Bounded, because SIGKILL is not always the end of it: a
+				// process wedged in an uninterruptible wait does not die on it,
+				// and waiting forever would take the whole shutdown down with
+				// this one program. Giving up here leaves the run unfinished,
+				// which the reconciler will see, rather than hanging the daemon.
+				if awaitClose(monitorDone, reapGrace) {
+					p.logger.Info("Force killed")
+				} else {
+					p.logger.Error("Process did not report its exit after SIGKILL, giving up on it",
+						"pid", pid, "waited", reapGrace)
+				}
 			}
 		}
 	}
@@ -434,6 +449,18 @@ func SignalGroup(pid int, sig syscall.Signal) error {
 // killLingeringGroup kills anything left in the process group after the process
 // itself has exited
 func (p *Process) killLingeringGroup(pid int) {
+	// The leader has been reaped by the time this runs, so its PID is free and
+	// the group id is only ours for as long as nothing else claims that number.
+	// A live process holding it means it has been handed out again, and
+	// signaling the group could then reach a stranger's tree rather than our
+	// leftovers. Refusing to clean up in that case leaks whatever is left in
+	// the old group, which is the lesser of the two: it is bounded by the
+	// program's own children, where the alternative is unbounded.
+	if err := syscall.Kill(pid, syscall.Signal(0)); err == nil {
+		p.logger.Warn("Not clearing the process group: its id belongs to a live process now", "pgid", pid)
+		return
+	}
+
 	if err := SignalGroup(pid, syscall.Signal(0)); err != nil {
 		return
 	}
@@ -441,6 +468,20 @@ func (p *Process) killLingeringGroup(pid int) {
 	p.logger.Info("Process group still has members after exit, killing them", "pgid", pid)
 	if err := SignalGroup(pid, syscall.SIGKILL); err != nil {
 		p.logger.Warn("Failed to kill lingering process group", "pgid", pid, "error", err)
+	}
+}
+
+// awaitClose waits for done to be closed, and reports whether it was before the
+// timeout elapsed.
+func awaitClose(done <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
