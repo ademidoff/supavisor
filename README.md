@@ -25,11 +25,37 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 
 ## Installation
 
+### Download a release
+
+Each release publishes one `tar.gz` per architecture, holding both binaries, the
+sample config, and a `checksums.txt` to verify the download against. Linux only,
+`amd64` and `arm64`.
+
+```bash
+VERSION=0.9.0
+ARCH=amd64  # or arm64
+
+curl -sSfL -O https://github.com/ademidoff/supavisor/releases/download/v${VERSION}/supavisor_${VERSION}_linux_${ARCH}.tar.gz
+curl -sSfL -O https://github.com/ademidoff/supavisor/releases/download/v${VERSION}/checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+
+tar -xzf supavisor_${VERSION}_linux_${ARCH}.tar.gz
+sudo install -m 0755 supavisor sctl /usr/local/bin/
+```
+
+The binaries are built with `CGO_ENABLED=0`, so they carry no libc dependency
+and run on any distribution.
+
+### Build from source
+
 ```bash
 git clone https://github.com/ademidoff/supavisor
 cd supavisor
 make build
 ```
+
+A source build reports its version as `dev`; only released binaries carry a
+version, commit and build date.
 
 ## Quick Start
 
@@ -131,6 +157,7 @@ nohup ./supavisor -c supavisor.yml &
 Options:
 - `-c, -config <path>`: Path to configuration file (default: `/etc/supavisor/supavisor.yml`)
 - `-logfile <path>`: Override log file path from config (optional)
+- `-version`: Print version, commit and build date, then exit
 
 ### sctl
 
@@ -143,6 +170,7 @@ works, `sctl status -s /run/supavisor.sock` is rejected.
 
 Options:
 - `-s, -socket <path>`: Path to supavisor socket (default: `/tmp/supavisor.sock`)
+- `-version`: Print version, commit and build date, then exit
 
 Access to the socket is access to the daemon: it can stop supervised processes,
 and `start` causes configured commands to run as the user supavisor runs as. The
@@ -848,6 +876,40 @@ checked against `go tool cover -func` on each change.
 
 Enabling this on a fork requires setting **Settings > Pages > Source** to
 **GitHub Actions**.
+
+### Releasing
+
+Releases are cut by the `Release` workflow (`.github/workflows/release.yml`),
+which only the repository owner can run: from the Actions tab, run **Release**
+against the branch to release and give it a version tag such as `v0.9.0`.
+
+The job validates the tag format, refuses a tag that already exists, and runs
+the test suite before tagging the commit, then hands off to
+[GoReleaser](https://goreleaser.com) (`.goreleaser.yaml`). GoReleaser builds
+`linux/amd64` and `linux/arm64`, stamps each binary with the tag, commit and
+commit date, packs both binaries into one `tar.gz` per architecture, and uploads
+the archives and `checksums.txt` to a GitHub release. The release notes are the
+commit subjects since the previous tag, minus `docs:`, `test:` and `chore:`.
+
+The release is left as a **draft**: review the artifacts and notes on the
+Releases page, then publish it by hand. Nothing is visible to users until you
+do. Note that the tag is pushed regardless — a draft does not defer that.
+
+Because the tests run before the tag is created, a failing build leaves no tag
+behind. If GoReleaser itself fails the tag has already been pushed, and it must
+be deleted (`git push --delete origin v0.9.0`) before that version can be
+retried.
+
+The build is reproducible: `-trimpath` keeps local paths out of the binaries and
+the commit timestamp is used instead of the build time, so rebuilding a tag
+yields byte-identical archives.
+
+To exercise the release locally without publishing anything:
+
+```bash
+goreleaser check
+goreleaser release --snapshot --clean --skip=publish
+```
 
 ## License
 

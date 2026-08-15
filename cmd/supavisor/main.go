@@ -14,6 +14,7 @@ import (
 
 	"github.com/ademidoff/supavisor/internal/config"
 	"github.com/ademidoff/supavisor/internal/server"
+	"github.com/ademidoff/supavisor/internal/version"
 )
 
 // parseLogLevel converts a string log level to slog.Level
@@ -35,11 +36,18 @@ func parseLogLevel(level string) (slog.Level, error) {
 func main() { //nolint:gocyclo,funlen
 	var configPath string
 	var logFilePath string
+	var showVersion bool
 
 	flag.StringVar(&configPath, "c", "/etc/supavisor/supavisor.yml", "Path to configuration file")
 	flag.StringVar(&configPath, "config", "/etc/supavisor/supavisor.yml", "Path to configuration file")
 	flag.StringVar(&logFilePath, "logfile", "", "Optional path to log file (logs go to stdout only in interactive mode)")
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version.String("supavisor"))
+		return
+	}
 
 	if configPath == "" {
 		fmt.Fprintf(os.Stderr, "Error: configuration file path is required\n")

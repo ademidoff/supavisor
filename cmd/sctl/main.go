@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ademidoff/supavisor/internal/api"
+	"github.com/ademidoff/supavisor/internal/version"
 )
 
 const (
@@ -36,10 +37,17 @@ const (
 
 func main() {
 	var socketPath string
+	var showVersion bool
 	flag.StringVar(&socketPath, "s", "/tmp/supavisor.sock", "Path to supavisor socket")
 	flag.StringVar(&socketPath, "socket", "/tmp/supavisor.sock", "Path to supavisor socket")
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit")
 	flag.Usage = printUsage
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version.String("sctl"))
+		return
+	}
 
 	if flag.NArg() == 0 {
 		printUsage()
@@ -265,4 +273,5 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Options (must precede the command):")
 	fmt.Println("  -s, -socket PATH    Path to supavisor socket (default: /tmp/supavisor.sock)")
+	fmt.Println("  -version            Print version information and exit")
 }

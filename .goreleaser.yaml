@@ -1,0 +1,88 @@
+# GoReleaser configuration: https://goreleaser.com
+# Validate with: ./bin/goreleaser check
+version: 2
+
+project_name: supavisor
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: supavisor
+    main: ./cmd/supavisor
+    binary: supavisor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    # The version package is linked into both binaries, so both share these
+    ldflags: &ldflags
+      - -s -w
+      - -X github.com/ademidoff/supavisor/internal/version.Version=v{{ .Version }}
+      - -X github.com/ademidoff/supavisor/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/ademidoff/supavisor/internal/version.Date={{ .CommitDate }}
+    # Stamping binaries with the commit date instead of the build time keeps
+    # rebuilds of the same tag byte-identical
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+  - id: sctl
+    main: ./cmd/sctl
+    binary: sctl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags: *ldflags
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+# The CLI is useless without the daemon, so both ship in a single archive
+archives:
+  - id: supavisor
+    ids:
+      - supavisor
+      - sctl
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    formats:
+      - tar.gz
+    files:
+      - README.md
+      - LICENSE
+      - supavisor.yml
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-snapshot'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  # Publish by hand from the Releases page, once the artifacts look right
+  draft: true
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```bash
+    curl -sSfL -O https://github.com/ademidoff/supavisor/releases/download/{{ .Tag }}/{{ .ProjectName }}_{{ .Version }}_linux_amd64.tar.gz
+    tar -xzf {{ .ProjectName }}_{{ .Version }}_linux_amd64.tar.gz
+    sudo install -m 0755 supavisor sctl /usr/local/bin/
+    ```
