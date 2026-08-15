@@ -256,7 +256,8 @@ func (p *Process) recordRun(cmd *exec.Cmd, monitorDone, stopRequested chan struc
 // immediately have its status collected with nobody yet listening for it.
 func (p *Process) spawn(cmd *exec.Cmd) (<-chan syscall.WaitStatus, error) {
 	return reaperFor(p.logger).spawn(func() (int, error) {
-		if err := cmd.Start(); err != nil {
+		err := cmd.Start()
+		if err != nil {
 			return 0, err
 		}
 		return cmd.Process.Pid, nil
@@ -329,12 +330,11 @@ func (p *Process) waitForStartSuccess(ctx context.Context, runExited <-chan stru
 	case <-ctx.Done():
 		return
 	case <-runExited:
-		// Observing the exit directly, rather than signaling the PID to see
-		// whether it answers: once the reaper has collected it the PID can be
-		// reused, and a probe would then report an unrelated process as ours.
-		if p.compareAndSetState(StateStarting, StateBackoff) {
-			p.logger.Info("Start check failed, setting state to BACKOFF")
-		}
+		// The monitor owns the state from here: it has the exit code and the
+		// restart policy, and will settle on BACKOFF, EXITED or FATAL
+		// accordingly. Setting a state here as well would publish a start
+		// failure for a program that exited cleanly, and would race the
+		// monitor for a transition it is about to make correctly.
 		return
 	}
 
@@ -482,8 +482,9 @@ func (p *Process) monitor(
 	// Nothing waited on the os.Process, so the handle Start allocated is still
 	// open. Releasing it closes the pidfd, which would otherwise leak one
 	// descriptor per run.
-	if err := cmd.Process.Release(); err != nil {
-		p.logger.Debug("Failed to release the process handle", "error", err)
+	releaseErr := cmd.Process.Release()
+	if releaseErr != nil {
+		p.logger.Debug("Failed to release the process handle", "error", releaseErr)
 	}
 
 	// Probing a process that has exited would keep reporting on whatever else
