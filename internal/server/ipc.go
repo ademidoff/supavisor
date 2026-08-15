@@ -43,9 +43,14 @@ const (
 
 // IPCServer handles communication with the CLI tool
 type IPCServer struct {
-	listener    net.Listener
-	server      *Server
-	stopChan    chan struct{}
+	listener net.Listener
+	server   *Server
+	stopChan chan struct{}
+
+	// accepting is closed once the accept loop has returned, or immediately if
+	// it never started. Only that loop adds to connections, so waiting for it
+	// is what lets Stop wait on the group safely.
+	accepting   chan struct{}
 	slots       chan struct{}
 	socketInfo  os.FileInfo
 	socketPath  string
@@ -60,6 +65,7 @@ func NewIPCServer(socketPath, socketGroup string, server *Server) *IPCServer {
 		socketGroup: socketGroup,
 		server:      server,
 		stopChan:    make(chan struct{}),
+		accepting:   make(chan struct{}),
 		slots:       make(chan struct{}, maxConnections),
 	}
 }
@@ -87,17 +93,27 @@ func (s *IPCServer) Start() error {
 
 	info, err := os.Stat(s.socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to stat socket: %w", err)
+		return s.startFailed(fmt.Errorf("failed to stat socket: %w", err))
 	}
 	s.socketInfo = info
 
 	if err := s.restrictSocket(); err != nil {
-		return err
+		return s.startFailed(err)
 	}
 
-	go s.acceptConnections()
+	go func() {
+		defer close(s.accepting)
+		s.acceptConnections()
+	}()
 
 	return nil
+}
+
+// startFailed reports a failure from Start, releasing what Stop would otherwise
+// wait for: the accept loop never began, so nothing else will close this.
+func (s *IPCServer) startFailed(err error) error {
+	close(s.accepting)
+	return err
 }
 
 // restrictSocket narrows who can talk to the daemon
@@ -143,6 +159,14 @@ func (s *IPCServer) Stop() error {
 	}
 
 	err := s.listener.Close()
+
+	// Before waiting on the group: the accept loop is the only thing that adds
+	// to it, and an Add that starts while the counter is zero and a Wait is
+	// already running is a WaitGroup misuse, which the race detector reports as
+	// a data race. Closing the listener is what ends the loop, so this returns
+	// promptly.
+	<-s.accepting
+
 	s.connections.Wait()
 	if s.socketInfo != nil {
 		if rmErr := removeIfSame(s.socketPath, s.socketInfo); rmErr != nil {

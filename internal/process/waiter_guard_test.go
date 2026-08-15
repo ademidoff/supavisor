@@ -21,6 +21,7 @@ var filesAllowedToSpawn = map[string]bool{
 	"internal/process/process.go":           true,
 	"internal/process/health.go":            true,
 	"internal/process/reaper_test.go":       true,
+	"internal/process/group_kill_test.go":   true,
 	"internal/process/reaper_linux_test.go": true,
 	"internal/server/state_test.go":         true,
 }

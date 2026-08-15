@@ -39,11 +39,11 @@ func zombieChildren(t *testing.T) []int {
 		}
 		// comm is parenthesised and may contain spaces, so the fields after it
 		// are found from the last ')' rather than by splitting the whole line.
-		close := strings.LastIndex(string(raw), ")")
-		if close < 0 {
+		closing := strings.LastIndex(string(raw), ")")
+		if closing < 0 {
 			continue
 		}
-		fields := strings.Fields(string(raw)[close+1:])
+		fields := strings.Fields(string(raw)[closing+1:])
 		if len(fields) < 2 {
 			continue
 		}
