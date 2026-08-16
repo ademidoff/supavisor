@@ -27,6 +27,7 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 - [Recovering from a crash](#recovering-from-a-crash)
 - [Process groups](#process-groups)
 - [Running as PID 1](#running-as-pid-1)
+  - [Start it with `exec`](#start-it-with-exec)
 - [Stopping processes](#stopping-processes)
   - [When a program needs `stopsignal: INT`](#when-a-program-needs-stopsignal-int)
   - [Checking whether a program handles its stop signal](#checking-whether-a-program-handles-its-stop-signal)
@@ -571,6 +572,36 @@ never calls `cmd.Wait()`.
 None of this needs configuring, and it costs nothing when supavisor is not PID 1:
 with a real init above it, orphans reparent there instead and the reaper simply
 never sees them.
+
+### Start it with `exec`
+
+An entrypoint script has to hand PID 1 over rather than keep it:
+
+```bash
+#!/bin/sh
+# ... setup ...
+
+exec supavisor -c /etc/supavisor/supavisor.yml
+```
+
+Without the `exec` the script stays PID 1 and supavisor runs as its child. Docker
+then sends `SIGTERM` to the script on `docker stop`, and a shell does not pass it
+on: supavisor never learns it is meant to stop, and every program is killed
+outright when the container is torn down. None of the shutdown described in
+[Stopping processes](#stopping-processes) happens — no `stopsignal`, no
+`stopwaitsecs`, no dependency order. A database configured for a fast shutdown
+gets a kill instead, and recovers on next boot.
+
+Measured, stopping the same container both ways:
+
+| | supavisor sees `SIGTERM` | shuts down cleanly |
+|---|---|---|
+| without `exec` | no | no, last line is a program reaching `RUNNING` |
+| with `exec` | yes | yes, down to `Supavisor daemon stopped` |
+
+Reaping is *not* the reason, which is what makes this easy to miss: a shell left
+as PID 1 does reap orphans, both `ash` and `bash`, so nothing accumulates and the
+container looks healthy. The damage only appears when you stop it.
 
 Both halves of that are reproducible rather than asserted. `probes/pid1-zombies.sh`
 runs supavisor as PID 1 in a container and counts what it leaves behind, and
