@@ -38,18 +38,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Before the tests, which take minutes: a lint failure is reached in
-      # seconds once the linter is built, and there is no sense finding out
-      # about a formatting problem only after a full run of the suite.
-      #
-      # Deliberately make lint rather than golangci-lint-action, so that the
-      # version is pinned in one place and CI runs what a contributor runs.
       - name: Lint
         run: make lint
 
-      # -count=1 bypasses Go's test result cache, which setup-go restores
-      # along with the build cache. Without it a run that changes no Go source
-      # replays the previous verdict, so the race detector never gets a fresh
-      # attempt at the timing-dependent tests.
       - name: Run tests
         run: make test GOTESTFLAGS=-count=1
