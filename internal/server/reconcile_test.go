@@ -855,7 +855,11 @@ func oneOffPrograms(migrate string, policy config.RestartPolicy) map[string]*con
 // healthy can express: a one-off is RUNNING only while its work is in flight,
 // so a dependent gated on that runs alongside the task rather than after it.
 func TestReconcile_WaitsForAOneOffToComplete(t *testing.T) {
-	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'sleep 2; exit 0'", config.RestartNever))
+	// The work outlasts startsecs by several seconds, so the window in which
+	// the task is RUNNING is wide enough for a loaded machine to catch. A
+	// poller that missed it would fail on the wait rather than on the check
+	// the wait exists to set up.
+	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'sleep 6; exit 0'", config.RestartNever))
 
 	if err := sv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -1044,5 +1048,80 @@ func TestStart_ReportsAOneOffThatFinishedInsideStartsecs(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Errorf("Took %v to report a one-off that had already finished", elapsed)
+	}
+}
+
+// TestStop_CancelsAPendingRestart covers a program that is between runs when it
+// is asked to stop. EXITED is not running, but it is not released either: the
+// monitor may be sitting in a restart backoff that only Stop() cancels, so
+// leaving it alone let a stopped program spawn a run nobody was asking for, one
+// backoff after the stop had been reported as done.
+func TestStop_CancelsAPendingRestart(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"flaky": {
+			Command: "/bin/sh -c 'exit 1'", Autostart: true,
+			Autorestart: config.RestartUnexpected, StartSecs: 1, MaxRestarts: 5,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// EXITED with a restart already queued behind it.
+	waitForState(t, sv, "flaky", process.StateExited, 10*time.Second)
+
+	if err := sv.StopProcess("flaky"); err != nil {
+		t.Fatalf("StopProcess failed: %v", err)
+	}
+	if state := sv.process("flaky").GetState(); state != process.StateStopped {
+		t.Errorf("Expected the program to be released to STOPPED, got %s", state)
+	}
+	pid := sv.process("flaky").GetPID()
+
+	// Long enough for the queued backoff to have fired.
+	time.Sleep(5 * time.Second)
+
+	if got := sv.process("flaky").GetPID(); got != pid {
+		t.Errorf("A stopped program started again: pid went from %d to %d", pid, got)
+	}
+	if state := sv.process("flaky").GetState(); state != process.StateStopped {
+		t.Errorf("A stopped program did not stay stopped, state is %s", state)
+	}
+}
+
+// TestStop_IsNotRefusedByAStoppedDependency keeps dependencies out of the stop
+// path. They decide what may start, never what may stop, and stopping a program
+// whose dependency was already stopped used to report that the program could
+// not start, while the stop itself was proceeding perfectly well.
+func TestStop_IsNotRefusedByAStoppedDependency(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"db": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+		"api": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+			DependsOn: []config.Dependency{{Name: "db"}},
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "api", process.StateRunning, 15*time.Second)
+
+	if err := sv.StopProcess("db"); err != nil {
+		t.Fatalf("StopProcess(db) failed: %v", err)
+	}
+	if err := sv.StopProcess("api"); err != nil {
+		t.Fatalf("Stopping a program whose dependency is stopped failed: %v", err)
+	}
+	if state := sv.process("api").GetState(); state != process.StateStopped {
+		t.Errorf("Expected api to be STOPPED, got %s", state)
 	}
 }

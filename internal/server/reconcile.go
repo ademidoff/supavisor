@@ -89,7 +89,12 @@ func (s *Server) reconcile() {
 			s.logger.Info("Starting process", "process", name)
 			s.runAction(name, proc.Start)
 
-		case desired == DesiredStopped && !state.IsStopped() && state != process.StateStopping:
+		// A program that has exited or given up is not running, but it is not
+		// released either: its monitor may be sitting in a restart backoff that
+		// only Stop() cancels. Leaving it alone let a stopped program spawn a
+		// run nobody was asking for, one backoff after the stop was reported
+		// as done.
+		case desired == DesiredStopped && state != process.StateStopped && state != process.StateStopping:
 			s.logger.Info("Stopping process", "process", name)
 			s.runAction(name, proc.Stop)
 		}
@@ -260,8 +265,14 @@ func (s *Server) awaitState(name string, done func(process.State) bool) error {
 		}
 		// Waiting out the timeout is only worth it while the outcome can still
 		// change. If a dependency is not even meant to come up, say so now.
-		if blocked, reason := s.blockedIndefinitely(name); blocked {
-			return fmt.Errorf("process %s cannot start: %s", name, reason)
+		//
+		// Only for a program that is wanted running: dependencies decide what
+		// may start, never what may stop, and a stop that was proceeding
+		// perfectly well used to report that the program could not start.
+		if s.wantsToRun(name) {
+			if blocked, reason := s.blockedIndefinitely(name); blocked {
+				return fmt.Errorf("process %s cannot start: %s", name, reason)
+			}
 		}
 
 		select {
@@ -272,6 +283,13 @@ func (s *Server) awaitState(name string, done func(process.State) bool) error {
 			return s.awaitTimeoutError(name, proc.GetState())
 		}
 	}
+}
+
+// wantsToRun reports whether a program is currently meant to be running
+func (s *Server) wantsToRun(name string) bool {
+	s.processMutex.RLock()
+	defer s.processMutex.RUnlock()
+	return s.desired[name] == DesiredRunning
 }
 
 // blockedIndefinitely reports a dependency that is not merely down but has no

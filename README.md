@@ -758,8 +758,9 @@ programs:
   unexpected` draws, so the two agree on what a successful run is.
 - **It is latched.** The condition stays satisfied while the task sits in `EXITED`,
   so a dependent that is started an hour later, or that crashes and comes back,
-  still starts. The latch lasts for as long as the daemon runs; a restarted daemon
-  runs the task again.
+  still starts. The latch belongs to the running daemon: a restarted one runs the
+  task again, or, if the task has `autostart: false`, holds the dependents back
+  until it is started by hand.
 - **Running the task again clears it**, so `sctl restart migrate` re-runs the work
   and latches again when it succeeds. Dependents that are already up are left
   alone, in the same way a dependency crashing does not stop them.

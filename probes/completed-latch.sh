@@ -112,11 +112,13 @@ if sctl start api >/dev/null 2>&1; then result="ok"; else result="REFUSED"; fi
 echo "$result ($(($(date +%s) - started))s)"
 
 echo
-sctl status
+# A daemon that died during the run is one of the outcomes worth seeing, so
+# neither of these may take the script down with set -e before it reports.
+sctl status || true
 
 # Only a program with something to explain has a reason, so this is the control
 # run's line: it names what the dependent is still waiting for.
-reason="$(sctl status api | sed -n 's/^Reason: *//p')"
+reason="$(sctl status api | sed -n 's/^Reason: *//p' || true)"
 if [ -n "$reason" ]; then
     echo
     echo "Why api is not running: $reason"

@@ -287,11 +287,8 @@ func (s *Server) StopProcess(name string) error {
 	}
 	s.requestReconcile()
 
-	// Any settled state will do: a program that had already exited or given up
-	// is not running, which is what was asked for, and the reconciler leaves it
-	// alone rather than moving it to STOPPED.
 	return s.awaitState(name, func(state process.State) bool {
-		return state.IsStopped()
+		return state == process.StateStopped
 	})
 }
 
