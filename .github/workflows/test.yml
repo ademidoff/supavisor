@@ -38,6 +38,21 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # go install builds golangci-lint from source, which was most of this
+      # job. Keyed on the Makefile because that is where the version is pinned
+      # and where the install lives, so nothing has to repeat the version here.
+      #
+      # The prefix restore-key takes the last binary when the Makefile changed
+      # for some other reason: lint-install checks the version of whatever it
+      # finds and reinstalls only if it does not match, so an unrelated edit
+      # costs nothing and a version bump is still honoured.
+      - name: Restore golangci-lint
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bin/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          restore-keys: golangci-lint-${{ runner.os }}-
+
       - name: Lint
         run: make lint
 
