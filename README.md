@@ -34,13 +34,14 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 - [Restart behavior](#restart-behavior)
 - [Dependency Management](#dependency-management)
   - [Waiting for readiness instead of for the process](#waiting-for-readiness-instead-of-for-the-process)
+  - [Waiting for a one-off to finish](#waiting-for-a-one-off-to-finish)
 - [Health checks](#health-checks)
   - [Probe kinds](#probe-kinds)
   - [Settings](#settings)
   - [What health does and does not do](#what-health-does-and-does-not-do)
 - [Log Rotation](#log-rotation)
 - [Best practices](#best-practices)
-  - [One-off programs should not have dependents](#one-off-programs-should-not-have-dependents)
+  - [Gate on a one-off with `condition: completed`](#gate-on-a-one-off-with-condition-completed)
 - [Examples](#examples)
   - [Basic Process](#basic-process)
   - [Process with Dependencies](#process-with-dependencies)
@@ -58,7 +59,8 @@ A process supervisor daemon written in Go, that is largely inspired by superviso
 ## Features
 
 - **Process Management**: Start, stop, restart, and monitor child processes
-- **Dependency Management**: Launch processes based on whether other processes are running
+- **Dependency Management**: Launch processes once the programs they depend on are
+  running, are ready to serve, or have finished their work
 - **Health Checks**: Probe a program to tell whether it is ready to serve, and hold
   its dependents back until it is
 - **Configuration-Based**: Configure process lifetime and behavior via YAML config files
@@ -359,9 +361,9 @@ Each program is defined under `programs` with its name as the key:
   is killed (default: 10)
 - `max_restarts`: Maximum number of *consecutive* restarts before giving up (default: 3).
   See [Restart behavior](#restart-behavior) for how the counter is reset.
-- `depends_on`: Programs that must come up first, either as a list of names or as a
-  mapping that says what each one has to reach. See
-  [Dependency Management](#dependency-management).
+- `depends_on`: Programs this one waits for, either as a list of names or as a
+  mapping that says what each one has to reach: `started`, `healthy` or `completed`.
+  See [Dependency Management](#dependency-management).
 - `health_check`: How to tell whether this program is ready to serve, rather than
   merely running. See [Health checks](#health-checks).
 - `stdout_logfile`: Path to stdout log file. If omitted, the process's stdout is
@@ -754,10 +756,59 @@ programs:
 - `condition: healthy` also waits for the dependency's `health_check` to pass.
   The dependency must declare one, or the configuration is rejected at startup
   rather than leaving the dependent waiting for something that can never happen.
+- `condition: completed` waits for the dependency to finish its work, which is what
+  a migration or an init task is depended on for. See
+  [Waiting for a one-off to finish](#waiting-for-a-one-off-to-finish).
 
 Both forms can be mixed across programs, and the list form is unchanged: adding a
 `health_check` to a program does not start gating dependents that only asked for it
 to be running.
+
+### Waiting for a one-off to finish
+
+`started` waits for the process and `healthy` waits for readiness. Neither says
+"wait for the work to be done", which is what an init task, a migration, a schema
+load or a seed job is actually depended on for. That is `condition: completed`:
+
+```yaml
+programs:
+  migrate:
+    command: /usr/bin/migrate --up
+    autorestart: never
+
+  api:
+    command: /usr/bin/api
+    depends_on:
+      migrate:
+        condition: completed
+```
+
+`api` starts once `migrate` has exited with status 0, and keeps running once it has.
+
+- **Exit status 0 is what satisfies it.** That is the same line `autorestart:
+  unexpected` draws, so the two agree on what a successful run is.
+- **It is latched.** The condition stays satisfied while the task sits in `EXITED`,
+  so a dependent that is started an hour later, or that crashes and comes back,
+  still starts. The latch belongs to the running daemon: a restarted one runs the
+  task again, or, if the task has `autostart: false`, holds the dependents back
+  until it is started by hand.
+- **Running the task again clears it**, so `sctl restart migrate` re-runs the work
+  and latches again when it succeeds. Dependents that are already up are left
+  alone, in the same way a dependency crashing does not stop them.
+- **A task that never completes** is retried under its own `autorestart` policy and
+  eventually reaches `FATAL`. Dependents are not left waiting in silence: starting
+  one is refused immediately, and the task responsible is named.
+- **`sctl start` on the task itself** reports what the work did rather than only
+  whether the program stayed up. A task that finishes inside `startsecs` never
+  reaches `RUNNING`, and exiting 0 is reported as the success it is.
+- **Reload replacing the task** clears the latch and runs the new definition, since
+  the completion belonged to the definition that was replaced. Dependents that are
+  already running stay running.
+
+`autorestart: unexpected` is the natural pairing: retry an unsuccessful run, settle
+on a successful one. `autorestart: always` on a task something waits to complete is
+rejected at startup, naming both programs — a program that is always restarted is
+never left in `EXITED`, so the wait could never end.
 
 Other behavior:
 
@@ -908,42 +959,34 @@ Notes:
 
 ## Best practices
 
-### One-off programs should not have dependents
+### Gate on a one-off with `condition: completed`
 
 A one-off program — one that does a piece of work and exits, such as a migration, a
-bootstrap script or an init playbook — is a perfectly good thing to supervise. With
-the default `autorestart: unexpected` it runs once, settles in `EXITED` and is left
-there, while a non-zero exit is retried and eventually reaches `FATAL`, so a failure
-is still visible in `sctl status` rather than passing silently.
-
-What a one-off should not be is the subject of another program's `depends_on`.
+bootstrap script or an init playbook — is a perfectly good thing to supervise, and a
+perfectly good thing to depend on. What matters is which condition the dependents
+use, because two of the three cannot express what a one-off offers.
 
 `condition: started` is satisfied while the dependency is `RUNNING`, and a one-off is
-`RUNNING` only for as long as its work takes. A dependent either starts inside that
-window — concurrently with the task it was meant to follow, not after it — or, if it
-comes to be started after the work has finished, does not start at all. The
-dependency has exited and will never come up again, so `sctl start` refuses it and
-says which program is responsible, and the reconcile loop leaves it `STOPPED`.
+`RUNNING` only for as long as its work takes. A dependent gated on that either starts
+inside that window — concurrently with the task it was meant to follow, not after it
+— or, if it comes to be started after the work has finished, does not start at all:
+the task has exited and is not coming back.
 
-The second case is the one that hurts, because it surfaces long after the
-configuration was written and looks nothing like a configuration problem. A
-dependent that crashes and is restarted an hour after the one-off completed cannot
-come back.
+`condition: healthy` is no better. Probes belong to a run, so a one-off's health
+returns to `-` when it exits; unless a probe happened to pass while the process was
+still alive, the dependent is waiting for a state that can no longer occur. Whether
+it does is a matter of timing between the check interval and the exit, which is not
+something to build on.
 
-`condition: healthy` does not rescue it. Probes belong to a run, so a one-off's
-health returns to `-` when it exits; unless a probe happened to pass while the
-process was still alive, the dependent is waiting for a state that can no longer
-occur. Whether it does is a matter of timing between the check interval and the
-exit, which is not something to build on.
-
-So leave one-offs out of the graph. Start them early with `priority` and let the
-programs that care about the result gate on something long-lived instead:
+`condition: completed` is the one to use. It waits for the work rather than for the
+process, and it stays satisfied afterwards, so a dependent restarted long after the
+task finished still starts:
 
 ```yaml
 programs:
-  # Runs once and exits. Nothing lists it in depends_on.
   migrate:
     command: /usr/bin/migrate --up
+    # Retry a failed run; a successful one settles in EXITED and stays there.
     autorestart: unexpected
     priority: 1
 
@@ -959,14 +1002,13 @@ programs:
     depends_on:
       db:
         condition: healthy
+      migrate:
+        condition: completed
 ```
 
-Note that `priority` orders the launch of programs that are ready to start; it does
-not wait for one to finish. There is currently no condition meaning "has completed
-successfully", so when a dependent genuinely must not run until the work is done,
-that ordering has to be expressed some other way: as a readiness check on the
-long-lived service that consumes the result, or by doing the work in the dependent's
-own startup path.
+`priority` is not a substitute for any of this: it orders the launch of programs that
+are ready to start, and does not wait for one to finish. Use it to get work moving
+early, and `depends_on` to express what must not run until it is done.
 
 ## Examples
 

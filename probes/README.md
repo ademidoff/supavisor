@@ -3,12 +3,13 @@
 Reproductions for behaviour that unit tests cannot show on their own, kept so the
 reasoning behind the code can be checked rather than taken on trust.
 
-Neither of these runs in CI. They are here to be run by hand when the code they
+None of these runs in CI. They are here to be run by hand when the code they
 cover is changed, and to record what was measured when it was written.
 
 | | What it answers |
 |---|---|
 | `pid1-zombies.sh` | Does supavisor leak zombies when it is PID 1? |
+| `completed-latch.sh` | Can a dependent of a finished one-off still be started? |
 | `wait4-race/main.go` | Why does supavisor not simply add a `wait4(-1)` goroutine? |
 
 ## pid1-zombies.sh
@@ -72,6 +73,56 @@ t=35s  zombies: 0  grandchildren: 5       <- count fine, table not
 
 That is what the `grandchildren` column is for: it counts them whether they are
 zombies or alive.
+
+## completed-latch.sh
+
+Runs a one-off task and a program that waits on it, in a container, and asks the
+two questions `condition: completed` exists to answer: does the dependent start
+*after* the work rather than alongside it, and can it still be started once the
+task has been sitting in `EXITED` for a while?
+
+```bash
+./probes/completed-latch.sh              # condition: completed, the case under test
+./probes/completed-latch.sh --started    # control: condition: started instead
+```
+
+The second phase is the one a unit test cannot really show. It leaves the
+dependent up for 20 seconds after the task finished, then takes it down and starts
+it again — a crash an hour later, compressed. That is the case that used to be
+unrecoverable for the lifetime of the daemon.
+
+A correct run:
+
+```
+t=1s  migrate=RUNNING  api=STOPPED
+t=4s  migrate=RUNNING  api=STOPPED     <- did not start alongside the work
+t=5s  migrate=EXITED   api=RUNNING     <- started once the work was done
+
+  sctl stop api ... ok
+  sctl start api ... ok (1s)           <- the completion outlived the run
+
+NAME      STATE     DESIRED   HEALTH   PID   EXIT_CODE   RESTARTS   UPTIME
+api       RUNNING   RUNNING   -        210   -1          0          1s
+migrate   EXITED    RUNNING   -        N/A   0           0          N/A
+```
+
+The control, which is what the same configuration did before the condition
+existed, fails in both phases:
+
+```
+t=2s  migrate=RUNNING  api=RUNNING     <- ran alongside the task, not after it
+t=5s  migrate=EXITED   api=RUNNING
+
+  sctl stop api ... ok
+  sctl start api ... REFUSED (30s)     <- and now it cannot come back
+
+Why api is not running: dependency migrate is EXITED
+```
+
+**The second phase is the point, not the first.** `condition: started` letting the
+dependent run alongside the task is visible immediately and reads as a
+configuration mistake. The refusal 25 seconds later is the one that surfaces in
+production, long after the config was written, and looks nothing like one.
 
 ## wait4-race/main.go
 

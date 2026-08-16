@@ -593,3 +593,118 @@ func TestStartCheckDoesNotReportACleanExitAsAStartFailure(t *testing.T) {
 		t.Errorf("Expected the program to settle on EXITED, got %s", state)
 	}
 }
+
+// oneOffCfg is a program that does a piece of work and exits, which is what the
+// completion latch exists for
+func oneOffCfg(t *testing.T, command string) *config.ProgramConfig {
+	t.Helper()
+
+	return &config.ProgramConfig{
+		Name:          "migrate",
+		Command:       command,
+		Autorestart:   config.RestartNever,
+		StartSecs:     1,
+		MaxRestarts:   1,
+		StdoutLogfile: filepath.Join(t.TempDir(), "out.log"),
+		Environment:   make(map[string]string),
+	}
+}
+
+// waitForState polls until a process reaches the wanted state
+func waitForState(t *testing.T, proc *Process, want State, within time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if proc.GetState() == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Process is %s after %v, expected %s", proc.GetState(), within, want)
+}
+
+// TestCompletionIsLatchedOnACleanExit covers what a dependent waiting for a
+// one-off is actually waiting for. The latch is also checked from the state
+// change callback, because that change is what wakes the dependent: setting it
+// afterwards would have the dependent look and find nothing.
+func TestCompletionIsLatchedOnACleanExit(t *testing.T) {
+	proc := NewProcess(oneOffCfg(t, "/bin/sh -c 'exit 0'"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	var mu sync.Mutex
+	completedAtExit := false
+	proc.SetStateChangeCallback(func(_ string, _, state State) {
+		if state != StateExited {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		completedAtExit = proc.HasCompleted()
+	})
+
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	// The work finishes well inside startsecs, so the program never reaches
+	// RUNNING: completion cannot be built on having been up.
+	waitForState(t, proc, StateExited, 5*time.Second)
+
+	if !proc.HasCompleted() {
+		t.Error("Expected a program that exited 0 to report having completed")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !completedAtExit {
+		t.Error("Completion was latched after the state change rather than before it")
+	}
+}
+
+// TestCompletionIsNotLatchedOnAFailedExit keeps the latch tied to the work
+// having succeeded, which is the whole reason it is worth waiting for
+func TestCompletionIsNotLatchedOnAFailedExit(t *testing.T) {
+	proc := NewProcess(oneOffCfg(t, "/bin/sh -c 'exit 3'"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+
+	waitForState(t, proc, StateExited, 5*time.Second)
+
+	if proc.HasCompleted() {
+		t.Error("Expected a program that exited 3 not to report having completed")
+	}
+}
+
+// TestCompletionIsClearedByRunningAgain covers the re-run: whatever the last
+// run achieved is back in question, so a dependent starting now waits for this
+// run rather than for one that has been superseded.
+func TestCompletionIsClearedByRunningAgain(t *testing.T) {
+	proc := NewProcess(oneOffCfg(t, "/bin/sh -c 'exit 0'"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Stop() })
+	waitForState(t, proc, StateExited, 5*time.Second)
+
+	// Stopping a program that has already exited resets it for another run. It
+	// does not undo the work, so the latch has to survive it.
+	if err := proc.Stop(); err != nil {
+		t.Fatalf("Stop() failed: %v", err)
+	}
+	if !proc.HasCompleted() {
+		t.Error("Stopping a program that had already completed cleared its completion")
+	}
+
+	proc.config.Command = "/bin/sleep 60"
+	if err := proc.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	if proc.HasCompleted() {
+		t.Error("Expected running again to clear the completion of the previous run")
+	}
+}

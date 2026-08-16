@@ -19,6 +19,13 @@ const (
 	// which is what readiness means for a program that initializes after its
 	// process is up.
 	ConditionHealthy DependencyCondition = "healthy"
+
+	// ConditionCompleted is satisfied once the dependency has exited with
+	// status 0, which is what "the work is done" means for a migration, an init
+	// task or anything else that runs once rather than staying up. It stays
+	// satisfied while the dependency sits in EXITED, so a dependent started
+	// long afterwards still starts.
+	ConditionCompleted DependencyCondition = "completed"
 )
 
 // Dependency is one entry of a program's depends_on
@@ -99,10 +106,10 @@ func parseDependencyCondition(name string, node *yaml.Node) (DependencyCondition
 		}
 
 		switch DependencyCondition(value.Value) {
-		case ConditionStarted, ConditionHealthy:
+		case ConditionStarted, ConditionHealthy, ConditionCompleted:
 			condition = DependencyCondition(value.Value)
 		default:
-			return "", fmt.Errorf("invalid depends_on condition for %s: %s (must be started or healthy)", name, value.Value)
+			return "", fmt.Errorf("invalid depends_on condition for %s: %s (must be started, healthy or completed)", name, value.Value)
 		}
 	}
 

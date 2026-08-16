@@ -511,16 +511,23 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Check that all dependencies exist, and that a dependency waited on for
-	// health has something to report
-	for name, prog := range c.Programs {
-		for _, dep := range prog.DependsOn {
+	// Check that all dependencies exist, and that the condition each is waited
+	// on for is one the dependency can actually reach
+	for _, name := range sortedProgramNames(c.Programs) {
+		for _, dep := range c.Programs[name].DependsOn {
 			target, exists := c.Programs[dep.Name]
 			if !exists {
 				return fmt.Errorf("program %s depends on %s which does not exist", name, dep.Name)
 			}
 			if dep.Condition == ConditionHealthy && target.HealthCheck == nil {
 				return fmt.Errorf("program %s waits for %s to be healthy, but %s has no health_check", name, dep.Name, dep.Name)
+			}
+			// A program that is always restarted is never left in EXITED, so
+			// waiting for it to complete would never resolve.
+			if dep.Condition == ConditionCompleted && target.Autorestart == RestartAlways {
+				return fmt.Errorf(
+					"program %s waits for %s to complete, but %s has autorestart: always and is restarted instead of completing",
+					name, dep.Name, dep.Name)
 			}
 		}
 	}
