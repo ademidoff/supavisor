@@ -595,7 +595,7 @@ gets a kill instead, and recovers on next boot.
 Measured, stopping the same container both ways:
 
 | with or without `exec` | supavisor sees `SIGTERM` | shuts down cleanly |
-|---|---|---|
+|:---|:---|:---|
 | with `exec` | yes | yes, down to `Supavisor daemon stopped` |
 | without `exec` | no | no, last line is a program reaching `RUNNING` |
 
