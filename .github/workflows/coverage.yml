@@ -1,9 +1,11 @@
 name: Coverage
 
+# Merges only. Coverage is published, not reviewed, so it is a property of what
+# is on main rather than of a proposal. Branches are covered by the Tests
+# workflow, which runs the same suite without the coverage instrumentation.
 on:
   push:
     branches: [main]
-  pull_request:
 
 permissions:
   contents: read
@@ -32,14 +34,12 @@ jobs:
         run: ./.github/scripts/coverage-site.sh coverage.out site
 
       - name: Upload Pages artifact
-        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
   deploy:
     needs: coverage
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       pages: write

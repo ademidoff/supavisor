@@ -27,7 +27,7 @@ build:
 # Run all tests
 test:
 	@echo "Running tests..."
-	@go test -race -v ./...
+	@go test -race -v $(GOTESTFLAGS) ./...
 
 # Run tests with the race detector and coverage, then print the total
 # -coverpkg=./... credits code exercised across package boundaries

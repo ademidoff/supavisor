@@ -1132,6 +1132,12 @@ wrong for CI: several tests here are timing-dependent, and a replayed result
 means the race detector never gets a fresh attempt. CI therefore passes
 `GOTESTFLAGS=-count=1`.
 
+CI keeps testing and coverage apart. The `Tests` workflow
+(`.github/workflows/test.yml`) runs `make test` on every push to a branch other
+than `main`; the `Coverage` workflow runs `make cover` on `main`. Each event
+therefore runs the suite exactly once — a branch push runs `Tests`, a merge runs
+`Coverage` — rather than testing the same commits again on the way in.
+
 `make cover` passes `-coverpkg=./...` so that code exercised across package
 boundaries is credited to the package that defines it. Without it, helpers in
 `internal/config` and `internal/process` that are driven by the `internal/server`
@@ -1145,7 +1151,7 @@ more unit tests.
 ### Coverage reporting
 
 The `Coverage` workflow (`.github/workflows/coverage.yml`) runs on every push to
-`main` and on every pull request. On `main` it publishes three files to
+`main`, which in practice means on every merge. It publishes three files to
 [GitHub Pages](https://ademidoff.github.io/supavisor/), built by
 `.github/scripts/coverage-site.sh`:
 
@@ -1153,7 +1159,9 @@ The `Coverage` workflow (`.github/workflows/coverage.yml`) runs on every push to
 - `report.html`: `go tool cover -html` output, annotated line by line
 - `coverage.json`: a [shields.io endpoint](https://shields.io/badges/endpoint-badge) descriptor backing the badge at the top of this README
 
-Pull requests run the tests and build the site, but do not deploy.
+Branches are deliberately left out. Coverage is published rather than reviewed,
+so it describes what is on `main`; a branch is tested by the `Tests` workflow
+instead, which runs the same suite without the coverage instrumentation.
 
 The per-file numbers are computed from `coverage.out` rather than read from
 `go tool cover -func`, which reports per function. Under `-coverpkg=./...` every

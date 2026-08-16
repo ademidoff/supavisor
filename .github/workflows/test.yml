@@ -1,0 +1,36 @@
+name: Tests
+
+# Every branch except main. A merge to main is not tested again here: the
+# commits were tested on the branch, and the Coverage workflow runs the whole
+# suite on main anyway to produce the profile, so a second run would only
+# duplicate it.
+#
+# Branch filters do not match tag pushes, so the tag the Release workflow
+# creates does not start a run either.
+on:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # -count=1 bypasses Go's test result cache, which setup-go restores
+      # along with the build cache. Without it a run that changes no Go source
+      # replays the previous verdict, so the race detector never gets a fresh
+      # attempt at the timing-dependent tests.
+      - name: Run tests
+        run: make test GOTESTFLAGS=-count=1
