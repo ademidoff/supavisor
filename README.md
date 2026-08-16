@@ -1133,10 +1133,16 @@ means the race detector never gets a fresh attempt. CI therefore passes
 `GOTESTFLAGS=-count=1`.
 
 CI keeps testing and coverage apart. The `Tests` workflow
-(`.github/workflows/test.yml`) runs `make test` on every push to a branch other
-than `main`; the `Coverage` workflow runs `make cover` on `main`. Each event
-therefore runs the suite exactly once — a branch push runs `Tests`, a merge runs
-`Coverage` — rather than testing the same commits again on the way in.
+(`.github/workflows/test.yml`) runs `make lint` and then `make test` on every
+push to a branch other than `main`; the `Coverage` workflow runs `make cover` on
+`main`. Each event therefore runs the suite exactly once — a branch push runs
+`Tests`, a merge runs `Coverage` — rather than testing the same commits again on
+the way in.
+
+`Tests` also runs on pull requests, but only those from a fork: a fork's pushes
+never reach this repository, so without it an outside contribution would arrive
+untested. A pull request from a branch of this repository is skipped there,
+having already been tested by the push that created it.
 
 `make cover` passes `-coverpkg=./...` so that code exercised across package
 boundaries is credited to the package that defines it. Without it, helpers in
