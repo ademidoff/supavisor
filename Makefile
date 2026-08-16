@@ -10,8 +10,12 @@ COVERAGE_FILE := coverage.out
 # CI passes -count=1 to bypass Go's test result cache
 GOTESTFLAGS ?=
 
-# Path to golangci-lint binary
-GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
+# Path to the golangci-lint binary that lint-install puts in place.
+#
+# Not probed for: this is expanded when the Makefile is read, which on a clean
+# checkout is before lint-install has run. The probe found nothing, left this
+# empty, and the lint recipe was left with no command to run at all.
+GOLANGCI_LINT := ./bin/golangci-lint
 
 # Build the binaries
 build:
