@@ -153,6 +153,17 @@ func (s *Server) dependenciesSatisfied(name string) (satisfied bool, reason stri
 		if !exists {
 			return false, fmt.Sprintf("dependency %s is not configured", dep.Name)
 		}
+
+		// A one-off is waited on for having finished rather than for being up,
+		// so RUNNING is the wrong thing to ask of it: it is only running while
+		// the work is still in flight.
+		if dep.Condition == config.ConditionCompleted {
+			if !depProc.HasCompleted() {
+				return false, fmt.Sprintf("dependency %s has not completed, it is %s", dep.Name, depProc.GetState())
+			}
+			continue
+		}
+
 		if state := depProc.GetState(); state != process.StateRunning {
 			return false, fmt.Sprintf("dependency %s is %s", dep.Name, state)
 		}
@@ -278,32 +289,59 @@ func (s *Server) blockedByDependency(name string, seen map[string]bool) (blocked
 	}
 	seen[name] = true
 
-	for _, dep := range s.dependencyGraph.GetDependencies(name) {
+	for _, dep := range s.dependenciesOf(name) {
 		s.processMutex.RLock()
-		depProc := s.processes[dep]
-		depDesired := s.desired[dep]
+		depProc := s.processes[dep.Name]
+		depDesired := s.desired[dep.Name]
 		s.processMutex.RUnlock()
 
 		if depProc == nil {
-			return true, fmt.Sprintf("dependency %s is not configured", dep)
+			return true, fmt.Sprintf("dependency %s is not configured", dep.Name)
 		}
 
 		state := depProc.GetState()
+		waitsForCompletion := dep.Condition == config.ConditionCompleted
+
 		switch {
+		// Work that is done stays done: what the program is left sitting in
+		// afterwards, and whether anyone means to run it again, no longer
+		// decides whether a dependent may start.
+		case waitsForCompletion && depProc.HasCompleted():
+			continue
 		case state == process.StateFatal:
-			return true, fmt.Sprintf("dependency %s gave up starting", dep)
+			return true, fmt.Sprintf("dependency %s gave up starting", dep.Name)
 		case depDesired == DesiredStopped && state.IsStopped():
-			return true, fmt.Sprintf("dependency %s is stopped and is not set to start", dep)
+			return true, fmt.Sprintf("dependency %s is stopped and is not set to start", dep.Name)
+		case waitsForCompletion && s.exitedForGood(dep.Name, state):
+			return true, fmt.Sprintf("dependency %s exited with status %d and will not be run again",
+				dep.Name, depProc.GetExitCode())
 		case state == process.StateRunning:
 			continue
 		}
 
-		if blockedDeep, deepReason := s.blockedByDependency(dep, seen); blockedDeep {
+		if blockedDeep, deepReason := s.blockedByDependency(dep.Name, seen); blockedDeep {
 			return true, deepReason
 		}
 	}
 
 	return false, ""
+}
+
+// exitedForGood reports a program that has exited and whose restart policy
+// declined to run it again.
+//
+// Unlike a FATAL program, which gave up on its way somewhere, this one has
+// settled: waiting for it to complete would never resolve. Only autorestart:
+// never can leave it here, since the other policies either restart an
+// unsuccessful exit or eventually reach FATAL.
+func (s *Server) exitedForGood(name string, state process.State) bool {
+	if state != process.StateExited {
+		return false
+	}
+
+	s.processMutex.RLock()
+	defer s.processMutex.RUnlock()
+	return s.autorestartPolicy(name) == config.RestartNever
 }
 
 // awaitTimeoutError explains why a program never reached the expected state

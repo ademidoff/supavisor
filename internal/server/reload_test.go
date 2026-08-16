@@ -285,3 +285,65 @@ func TestDiffPrograms(t *testing.T) {
 		t.Errorf("changed = %v, expected [altered]", changed)
 	}
 }
+
+// TestReload_ReRunsAReplacedOneOff covers a completed task being redefined: the
+// completion belonged to the old definition, so the new one runs and latches on
+// its own account. A dependent that is already up stays up.
+func TestReload_ReRunsAReplacedOneOff(t *testing.T) {
+	sv, write := newReloadServer(t, `
+programs:
+  migrate:
+    command: /bin/sh -c 'exit 0'
+    autorestart: never
+    startsecs: 1
+  api:
+    command: /bin/sleep 60
+    startsecs: 1
+    autorestart: never
+    depends_on:
+      migrate:
+        condition: completed
+`)
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "migrate", process.StateExited, 10*time.Second)
+	waitForState(t, sv, "api", process.StateRunning, 10*time.Second)
+	apiPID := sv.process("api").GetPID()
+
+	write(`
+programs:
+  migrate:
+    command: /bin/sh -c 'exit 0'
+    autorestart: never
+    startsecs: 2
+  api:
+    command: /bin/sleep 60
+    startsecs: 1
+    autorestart: never
+    depends_on:
+      migrate:
+        condition: completed
+`)
+
+	applied, err := sv.Reload()
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if !slices.Contains(applied.Changed, "migrate") {
+		t.Fatalf("Expected migrate to be reported as changed, got %+v", applied)
+	}
+
+	// The replacement runs on its own account rather than inheriting what the
+	// definition it replaced achieved.
+	waitForState(t, sv, "migrate", process.StateExited, 10*time.Second)
+	if !sv.process("migrate").HasCompleted() {
+		t.Error("Expected the replaced task to run again and latch")
+	}
+
+	if pid := sv.process("api").GetPID(); pid != apiPID {
+		t.Errorf("Dependent was restarted by the reload: pid went from %d to %d", apiPID, pid)
+	}
+}

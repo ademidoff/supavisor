@@ -269,7 +269,12 @@ func (s *Server) StartProcess(name string) error {
 	s.requestReconcile()
 
 	return s.awaitState(name, func(state process.State) bool {
-		return state == process.StateRunning
+		// A one-off can finish its work inside startsecs and so never reach
+		// RUNNING. Waiting only for RUNNING would report a program that did
+		// exactly what it was asked to as a failure. The reset above put it in
+		// STOPPED, so the completion seen here can only be this run's.
+		return state == process.StateRunning ||
+			(state == process.StateExited && proc.HasCompleted())
 	})
 }
 
@@ -282,8 +287,11 @@ func (s *Server) StopProcess(name string) error {
 	}
 	s.requestReconcile()
 
+	// Any settled state will do: a program that had already exited or given up
+	// is not running, which is what was asked for, and the reconciler leaves it
+	// alone rather than moving it to STOPPED.
 	return s.awaitState(name, func(state process.State) bool {
-		return state == process.StateStopped
+		return state.IsStopped()
 	})
 }
 

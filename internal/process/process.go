@@ -77,6 +77,7 @@ type Process struct {
 	pid               int
 	exitCode          int
 	restartCount      int
+	completed         bool
 	stoppedExternally bool
 }
 
@@ -169,6 +170,18 @@ func (p *Process) GetRestartCount() int {
 	return p.restartCount
 }
 
+// HasCompleted reports whether the program has finished its work successfully:
+// a run that ended on its own with status 0.
+//
+// It stays true while the program sits in EXITED, which is what lets a one-off
+// be depended on. Starting the program again clears it, so the answer is always
+// about the most recent run rather than about any run there has ever been.
+func (p *Process) HasCompleted() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.completed
+}
+
 // Start starts the process
 func (p *Process) Start() error {
 	p.mu.Lock()
@@ -176,6 +189,9 @@ func (p *Process) Start() error {
 		p.mu.Unlock()
 		return fmt.Errorf("process %s is already running or starting", p.config.Name)
 	}
+	// Running again puts whatever the last run achieved back in question, so
+	// anything waiting for this program to complete waits for this run instead.
+	p.completed = false
 	// Every run gets a fresh context, canceled by Stop(). It drives this run's
 	// health checks and restart backoff, so reusing a canceled one would leave
 	// a restarted process with neither.
@@ -560,6 +576,14 @@ func (p *Process) monitor(
 		p.setState(StateStopped)
 	default:
 		p.logger.Info("Process exited", "exit_code", exitCode)
+		// A clean exit nobody asked for is the program finishing its work.
+		// Latched before the state change, because that change is what wakes
+		// anything waiting for this program to complete.
+		if exitCode == 0 {
+			p.mu.Lock()
+			p.completed = true
+			p.mu.Unlock()
+		}
 		p.setState(StateExited)
 		p.maybeRestart(ctx, stopRequested, exitCode)
 	}

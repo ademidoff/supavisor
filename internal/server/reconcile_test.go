@@ -833,3 +833,216 @@ func TestProgramNamesIsStableWithoutPriorities(t *testing.T) {
 		}
 	}
 }
+
+// oneOffPrograms is the shape the completed condition exists for: a task that
+// does a piece of work and exits, and a long-lived program that must not run
+// until the work is done.
+func oneOffPrograms(migrate string, policy config.RestartPolicy) map[string]*config.ProgramConfig {
+	return map[string]*config.ProgramConfig{
+		"migrate": {
+			Command: migrate, Autostart: true,
+			Autorestart: policy, StartSecs: 1, MaxRestarts: 1,
+		},
+		"api": {
+			Command: "/bin/sleep 60", Autostart: true,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+			DependsOn: []config.Dependency{{Name: "migrate", Condition: config.ConditionCompleted}},
+		},
+	}
+}
+
+// TestReconcile_WaitsForAOneOffToComplete covers what neither started nor
+// healthy can express: a one-off is RUNNING only while its work is in flight,
+// so a dependent gated on that runs alongside the task rather than after it.
+func TestReconcile_WaitsForAOneOffToComplete(t *testing.T) {
+	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'sleep 2; exit 0'", config.RestartNever))
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// The window a started condition would have let the dependent through.
+	waitForState(t, sv, "migrate", process.StateRunning, 10*time.Second)
+	if state := sv.process("api").GetState(); state != process.StateStopped {
+		t.Errorf("Dependent started while the task was still working, state is %s", state)
+	}
+
+	waitForState(t, sv, "migrate", process.StateExited, 10*time.Second)
+	waitForState(t, sv, "api", process.StateRunning, 10*time.Second)
+}
+
+// TestReconcile_CompletionOutlivesTheRun is the case that fails today and the
+// reason the condition is latched. A dependent started long after the task has
+// finished still starts: the work was done, and the task sitting in EXITED does
+// not undo it.
+func TestReconcile_CompletionOutlivesTheRun(t *testing.T) {
+	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'exit 0'", config.RestartNever))
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "migrate", process.StateExited, 10*time.Second)
+	waitForState(t, sv, "api", process.StateRunning, 10*time.Second)
+
+	// The dependent goes down long after the task completed, which is where
+	// this used to become unrecoverable for the lifetime of the daemon.
+	if err := sv.StopProcess("api"); err != nil {
+		t.Fatalf("StopProcess(api) failed: %v", err)
+	}
+
+	started := time.Now()
+	if err := sv.StartProcess("api"); err != nil {
+		t.Fatalf("Starting a dependent after its task completed failed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("Took %v to start a dependent whose task had already completed", elapsed)
+	}
+}
+
+// TestReconcile_ReportsAOneOffThatCannotComplete keeps a failed task off the
+// indefinite-wait path: it names the program actually responsible instead of
+// leaving the dependent waiting for something that is not coming.
+func TestReconcile_ReportsAOneOffThatCannotComplete(t *testing.T) {
+	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'exit 1'", config.RestartNever))
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "migrate", process.StateExited, 10*time.Second)
+
+	started := time.Now()
+	err := sv.StartProcess("api")
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("Expected starting a dependent of a task that failed to be refused")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("Took %v to report a start that could never succeed", elapsed)
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Errorf("Error should name the task responsible, got: %v", err)
+	}
+
+	// And the reconciler leaves it alone rather than starting it anyway.
+	if state := sv.process("api").GetState(); state == process.StateRunning {
+		t.Error("Dependent started even though its task never completed")
+	}
+}
+
+// TestReconcile_ReportsAOneOffThatGaveUp covers the other way a task fails to
+// complete: retried under its policy and eventually FATAL.
+func TestReconcile_ReportsAOneOffThatGaveUp(t *testing.T) {
+	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'exit 1'", config.RestartUnexpected))
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	// One retry, then FATAL.
+	waitForState(t, sv, "migrate", process.StateFatal, 20*time.Second)
+
+	err := sv.StartProcess("api")
+	if err == nil {
+		t.Fatal("Expected starting a dependent of a task that gave up to be refused")
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Errorf("Error should name the task responsible, got: %v", err)
+	}
+}
+
+// TestReconcile_RunningAOneOffAgainReLatchesIt covers re-running the work:
+// the completion is cleared for the new run and set again when it succeeds,
+// while a dependent that is already up is left alone.
+func TestReconcile_RunningAOneOffAgainReLatchesIt(t *testing.T) {
+	sv := newTestServer(t, oneOffPrograms("/bin/sh -c 'sleep 2; exit 0'", config.RestartNever))
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "migrate", process.StateExited, 15*time.Second)
+	waitForState(t, sv, "api", process.StateRunning, 10*time.Second)
+	apiPID := sv.process("api").GetPID()
+
+	if err := sv.RestartProcess("migrate"); err != nil {
+		t.Fatalf("RestartProcess(migrate) failed: %v", err)
+	}
+	if sv.process("migrate").HasCompleted() {
+		t.Error("Re-running the task did not clear its completion")
+	}
+
+	waitForState(t, sv, "migrate", process.StateExited, 15*time.Second)
+	if !sv.process("migrate").HasCompleted() {
+		t.Error("Expected the task to latch again after a second successful run")
+	}
+
+	// A dependency being restarted does not stop its dependents, in the same
+	// way one crashing does not.
+	if state := sv.process("api").GetState(); state != process.StateRunning {
+		t.Errorf("Dependent should have been left alone, state is %s", state)
+	}
+	if pid := sv.process("api").GetPID(); pid != apiPID {
+		t.Errorf("Dependent was restarted: pid went from %d to %d", apiPID, pid)
+	}
+}
+
+// TestStop_SettlesForAProgramThatHadAlreadyExited covers a program that is
+// already not running when it is asked to stop. The reconciler leaves EXITED
+// alone by design, so waiting for STOPPED specifically never returned.
+func TestStop_SettlesForAProgramThatHadAlreadyExited(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"once": {
+			Command: "/bin/sh -c 'exit 0'", Autostart: true,
+			Autorestart: config.RestartNever, StartSecs: 1, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	waitForState(t, sv, "once", process.StateExited, 10*time.Second)
+
+	started := time.Now()
+	if err := sv.StopProcess("once"); err != nil {
+		t.Fatalf("StopProcess on a program that had exited failed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("Took %v to stop a program that was already not running", elapsed)
+	}
+}
+
+// TestStart_ReportsAOneOffThatFinishedInsideStartsecs covers the outcome
+// reported for work that is over before startsecs has elapsed: the program
+// never reaches RUNNING, and waiting only for that called a successful run a
+// failure.
+func TestStart_ReportsAOneOffThatFinishedInsideStartsecs(t *testing.T) {
+	sv := newTestServer(t, map[string]*config.ProgramConfig{
+		"once": {
+			Command: "/bin/sh -c 'exit 0'", Autostart: false,
+			Autorestart: config.RestartNever, StartSecs: 5, MaxRestarts: 1,
+		},
+	})
+
+	if err := sv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sv.Stop() })
+
+	started := time.Now()
+	if err := sv.StartProcess("once"); err != nil {
+		t.Fatalf("StartProcess on a one-off failed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("Took %v to report a one-off that had already finished", elapsed)
+	}
+}

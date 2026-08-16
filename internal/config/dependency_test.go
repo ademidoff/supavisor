@@ -35,6 +35,14 @@ func TestDependsOn_MappingFormCarriesConditions(t *testing.T) {
     command: /usr/bin/tailer
     depends_on:
       db:
+  migrate:
+    command: /usr/bin/migrate --up
+    autorestart: never
+  seed:
+    command: /usr/bin/seed
+    depends_on:
+      migrate:
+        condition: completed
 `)
 	if err != nil {
 		t.Fatalf("ParseConfigFile failed: %v", err)
@@ -46,6 +54,11 @@ func TestDependsOn_MappingFormCarriesConditions(t *testing.T) {
 	}
 	if api[0].Condition != ConditionHealthy {
 		t.Errorf("Expected api to wait for db to be healthy, got %s", api[0].Condition)
+	}
+
+	seed := cfg.Programs["seed"].DependsOn
+	if len(seed) != 1 || seed[0].Condition != ConditionCompleted {
+		t.Errorf("Expected seed to wait for migrate to complete, got %v", seed)
 	}
 
 	// A bare name under the mapping form means the default condition, the same
@@ -98,7 +111,7 @@ func TestDependsOn_RejectsBadInput(t *testing.T) {
       db:
         condition: ready
 `,
-			wantErr: "must be started or healthy",
+			wantErr: "must be started, healthy or completed",
 		},
 		{
 			name: "unknown key in an entry",
@@ -173,5 +186,58 @@ func TestValidate_HealthyConditionNeedsAHealthCheck(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no health_check") {
 		t.Errorf("Expected the error to name the missing health_check, got: %v", err)
+	}
+}
+
+// TestValidate_CompletedConditionRejectsAlwaysRestart covers the other wait
+// that could never be satisfied: a program that is always restarted is never
+// left in EXITED, so it never completes.
+func TestValidate_CompletedConditionRejectsAlwaysRestart(t *testing.T) {
+	cfg, err := parseConfigString(t, `programs:
+  migrate:
+    command: /usr/bin/migrate --up
+    autorestart: always
+  api:
+    command: /usr/bin/api
+    depends_on:
+      migrate:
+        condition: completed
+`)
+	if err != nil {
+		t.Fatalf("ParseConfigFile failed: %v", err)
+	}
+
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Expected waiting for a program that is always restarted to complete to be rejected")
+	}
+	// Both programs, because either one of them is the thing to change.
+	for _, name := range []string{"api", "migrate"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("Expected the error to name %s, got: %v", name, err)
+		}
+	}
+}
+
+// TestValidate_CompletedConditionAllowsRetryingOnFailure is the natural pairing
+// the rejection above must not catch: retry an unsuccessful run, latch on a
+// successful one.
+func TestValidate_CompletedConditionAllowsRetryingOnFailure(t *testing.T) {
+	cfg, err := parseConfigString(t, `programs:
+  migrate:
+    command: /usr/bin/migrate --up
+    autorestart: unexpected
+  api:
+    command: /usr/bin/api
+    depends_on:
+      migrate:
+        condition: completed
+`)
+	if err != nil {
+		t.Fatalf("ParseConfigFile failed: %v", err)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Expected autorestart: unexpected to be accepted, got: %v", err)
 	}
 }
