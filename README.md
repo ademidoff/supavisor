@@ -594,10 +594,10 @@ gets a kill instead, and recovers on next boot.
 
 Measured, stopping the same container both ways:
 
-| | supavisor sees `SIGTERM` | shuts down cleanly |
+| with or without `exec` | supavisor sees `SIGTERM` | shuts down cleanly |
 |---|---|---|
-| without `exec` | no | no, last line is a program reaching `RUNNING` |
 | with `exec` | yes | yes, down to `Supavisor daemon stopped` |
+| without `exec` | no | no, last line is a program reaching `RUNNING` |
 
 Reaping is *not* the reason, which is what makes this easy to miss: a shell left
 as PID 1 does reap orphans, both `ash` and `bash`, so nothing accumulates and the
