@@ -1,4 +1,4 @@
-.PHONY: build test cover cover-html clean run lint lint-install format
+.PHONY: $(MAKECMDGOALS)
 
 # Version of golangci-lint to use
 GOLANGCI_LINT_VERSION := v2.12.2
@@ -10,8 +10,8 @@ COVERAGE_FILE := coverage.out
 # CI passes -count=1 to bypass Go's test result cache
 GOTESTFLAGS ?=
 
-# Path to golangci-lint binary
-GOLANGCI_LINT := $(shell if [ -f ./bin/golangci-lint ]; then echo ./bin/golangci-lint || echo ""; fi)
+# Path to the golangci-lint binary that lint-install puts in place.
+GOLANGCI_LINT := ./bin/golangci-lint
 
 # Build the binaries
 build:
@@ -27,7 +27,7 @@ build:
 # Run all tests
 test:
 	@echo "Running tests..."
-	@go test -race -v ./...
+	@go test -race -v $(GOTESTFLAGS) ./...
 
 # Run tests with the race detector and coverage, then print the total
 # -coverpkg=./... credits code exercised across package boundaries
